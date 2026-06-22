@@ -1,0 +1,21 @@
+options:
+  dcf_path: dcf
+  no_strict: true
+master:
+  node_id: 127
+  baudrate: 1000
+  heartbeat_consumer: false
+  heartbeat_producer: 0
+  sync_period: 1000
+  sync_window: 0
+  start: true
+  start_nodes: true
+  reset_all_nodes: false
+  stop_all_nodes: false
+  boot_time: 5000
+phu_joint:
+  dcf: generated/canopen/eyou_phu/eyou_phu.normalized.eds
+  node_id: 1
+  mandatory: true
+  boot: true
+  reset_communication: true

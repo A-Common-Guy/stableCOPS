@@ -1,0 +1,158 @@
+{
+  "name": "eyou_phu",
+  "vendor_eds": "eds/EDS files/EYOU_ServoModule\uff08PHU\uff09.eds",
+  "normalized_eds": "generated/canopen/eyou_phu/eyou_phu.normalized.eds",
+  "master_dcf": "dcf/master.dcf",
+  "node_id": 1,
+  "master_node_id": 127,
+  "identity_policy": "ignore",
+  "pdo_policy": "vendor-default",
+  "mode_policy": "vendor-default",
+  "pdo_mappings": {
+    "rpdo": [
+      {
+        "pdo": 1,
+        "communication_index": "0x1400",
+        "mapping_index": "0x1600",
+        "cob_id": 513,
+        "transmission_type": 1,
+        "entries": [
+          {
+            "index": "0x6040",
+            "subindex": 0,
+            "bit_length": 16,
+            "name": "Controlword"
+          },
+          {
+            "index": "0x60FF",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Target velocity"
+          },
+          {
+            "index": "0x6060",
+            "subindex": 0,
+            "bit_length": 8,
+            "name": "Modes of operation"
+          }
+        ]
+      },
+      {
+        "pdo": 2,
+        "communication_index": "0x1401",
+        "mapping_index": "0x1601",
+        "cob_id": 769,
+        "transmission_type": 1,
+        "entries": [
+          {
+            "index": "0x607A",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Target position"
+          },
+          {
+            "index": "0x6081",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Profile velocity"
+          }
+        ]
+      },
+      {
+        "pdo": 3,
+        "communication_index": "0x1402",
+        "mapping_index": "0x1602",
+        "cob_id": 1025,
+        "transmission_type": 1,
+        "entries": [
+          {
+            "index": "0x6083",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Profile acceleration"
+          },
+          {
+            "index": "0x6084",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Profile deceleration"
+          }
+        ]
+      },
+      {
+        "pdo": 4,
+        "communication_index": "0x1403",
+        "mapping_index": "0x1603",
+        "cob_id": 2147484929,
+        "transmission_type": 255,
+        "entries": []
+      }
+    ],
+    "tpdo": [
+      {
+        "pdo": 1,
+        "communication_index": "0x1800",
+        "mapping_index": "0x1A00",
+        "cob_id": 1073742209,
+        "transmission_type": 1,
+        "entries": [
+          {
+            "index": "0x6041",
+            "subindex": 0,
+            "bit_length": 16,
+            "name": "Statusword"
+          },
+          {
+            "index": "0x6061",
+            "subindex": 0,
+            "bit_length": 8,
+            "name": "Modes of operation display"
+          },
+          {
+            "index": "0x6077",
+            "subindex": 0,
+            "bit_length": 16,
+            "name": "Torque actual value"
+          }
+        ]
+      },
+      {
+        "pdo": 2,
+        "communication_index": "0x1801",
+        "mapping_index": "0x1A01",
+        "cob_id": 1073742465,
+        "transmission_type": 1,
+        "entries": [
+          {
+            "index": "0x6064",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Position actual value"
+          },
+          {
+            "index": "0x606C",
+            "subindex": 0,
+            "bit_length": 32,
+            "name": "Velocity actual value"
+          }
+        ]
+      },
+      {
+        "pdo": 3,
+        "communication_index": "0x1802",
+        "mapping_index": "0x1A02",
+        "cob_id": 3221226369,
+        "transmission_type": 255,
+        "entries": []
+      },
+      {
+        "pdo": 4,
+        "communication_index": "0x1803",
+        "mapping_index": "0x1A03",
+        "cob_id": 3221226625,
+        "transmission_type": 255,
+        "entries": []
+      }
+    ]
+  }
+}
