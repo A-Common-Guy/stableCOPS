@@ -218,8 +218,12 @@ void MotorDriver::enableDrive(bool prime_csp_target) {
               << ds402::toString(feedback.state)
               << ", mode " << ds402::toString(feedback.mode) << '\n';
 
-    if (prime_csp_target || feedback.mode == ds402::OperationMode::CyclicSynchronousPosition) {
-        drive_.requestMode(ds402::OperationMode::CyclicSynchronousPosition);
+    if (prime_csp_target &&
+        feedback.mode != ds402::OperationMode::CyclicSynchronousPosition) {
+        throw std::runtime_error("CSP hold/target requires cyclic synchronous position mode");
+    }
+
+    if (prime_csp_target) {
         const auto position = drive_.primeCspTargetToCurrentPosition();
         std::cout << "  primed CSP target position to current position "
                   << position << '\n';
