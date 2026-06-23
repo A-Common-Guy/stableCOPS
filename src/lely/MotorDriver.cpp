@@ -28,6 +28,38 @@ uint32_t mappingEntryWord(const config::PdoMappedObject& object) {
 
 constexpr uint32_t kCobIdValidMask = 0x80000000u;
 
+// Objects whose CANopen type is signed. Everything else PDO-mappable here
+// (controlword, statusword, error code, profile/torque limits, MIT params) is
+// unsigned. Used together with the mapped bit length to pick the wire type.
+bool isSignedObject(uint16_t index) {
+    switch (index) {
+        case ds402::od::modes_of_operation:
+        case ds402::od::modes_of_operation_display:
+        case ds402::od::position_actual_value:
+        case ds402::od::velocity_actual_value:
+        case ds402::od::target_position:
+        case ds402::od::target_velocity:
+        case ds402::od::target_torque:
+        case ds402::od::torque_actual_value:
+            return true;
+        default:
+            return false;
+    }
+}
+
+PdoDataType objectTypeFor(uint16_t index, uint8_t bit_length) {
+    const bool is_signed = isSignedObject(index);
+    switch (bit_length) {
+        case 8:
+            return is_signed ? PdoDataType::I8 : PdoDataType::U8;
+        case 16:
+            return is_signed ? PdoDataType::I16 : PdoDataType::U16;
+        case 32:
+        default:
+            return is_signed ? PdoDataType::I32 : PdoDataType::U32;
+    }
+}
+
 // How often to log progress while waiting for the drive to confirm it has
 // dropped its power stage during shutdown.
 constexpr auto kPowerOffRetryLogInterval = std::chrono::milliseconds(200);
@@ -65,7 +97,142 @@ MotorDriver::MotorDriver(::lely::canopen::AsyncMaster& master,
     : ::lely::canopen::FiberDriver(master, node_id),
       drive_(*this),
       boot_actions_(std::move(boot_actions)),
-      pdo_map_(std::move(pdo_map)) {}
+      pdo_map_(std::move(pdo_map)) {
+    buildCyclicObjects();
+}
+
+void MotorDriver::buildCyclicObjects() {
+    // Snapshot the active RxPDO / TxPDO objects once so the cyclic path is a
+    // plain iteration with no per-cycle allocation or PDO-layout knowledge.
+    const auto collect = [](const std::vector<config::PdoChannel>& channels,
+                            std::vector<CyclicObject>& out) {
+        for (const auto& channel : channels) {
+            if (!channel.active()) {
+                continue;
+            }
+            for (const auto& entry : channel.entries) {
+                CyclicObject object;
+                object.index = entry.index;
+                object.subindex = entry.subindex;
+                object.type = objectTypeFor(entry.index, entry.bit_length);
+                out.push_back(object);
+            }
+        }
+    };
+    collect(pdo_map_.rpdo, command_objects_);
+    collect(pdo_map_.tpdo, feedback_objects_);
+}
+
+CyclicObject* MotorDriver::findCommand(uint16_t index) {
+    for (auto& object : command_objects_) {
+        if (object.index == index) {
+            return &object;
+        }
+    }
+    return nullptr;
+}
+
+const CyclicObject* MotorDriver::findCommand(uint16_t index) const {
+    for (const auto& object : command_objects_) {
+        if (object.index == index) {
+            return &object;
+        }
+    }
+    return nullptr;
+}
+
+bool MotorDriver::hasCommand(uint16_t index) const {
+    return findCommand(index) != nullptr;
+}
+
+int64_t MotorDriver::commandValue(uint16_t index) const {
+    const auto* object = findCommand(index);
+    return object ? object->value : 0;
+}
+
+void MotorDriver::setCommandValue(uint16_t index, int64_t value) {
+    if (auto* object = findCommand(index)) {
+        object->value = value;
+    }
+}
+
+int64_t MotorDriver::readMappedObject(const CyclicObject& object,
+                                      std::error_code& ec) {
+    // Feedback objects are the drive's TxPDOs, which Lely surfaces to the master
+    // through rpdo_mapped. Reading here never hits the bus; it returns the value
+    // from the last received frame.
+    auto sub = rpdo_mapped[object.index][object.subindex];
+    switch (object.type) {
+        case PdoDataType::U8:
+            return sub.Read<uint8_t>(ec);
+        case PdoDataType::I8:
+            return sub.Read<int8_t>(ec);
+        case PdoDataType::U16:
+            return sub.Read<uint16_t>(ec);
+        case PdoDataType::I16:
+            return sub.Read<int16_t>(ec);
+        case PdoDataType::U32:
+            return sub.Read<uint32_t>(ec);
+        case PdoDataType::I32:
+            return sub.Read<int32_t>(ec);
+    }
+    return 0;
+}
+
+void MotorDriver::writeMappedObject(const CyclicObject& object,
+                                    std::error_code& ec) {
+    // Command objects are the drive's RxPDOs, which the master transmits through
+    // tpdo_mapped. Writing here stages the value into the outgoing frame emitted
+    // on this SYNC.
+    auto sub = tpdo_mapped[object.index][object.subindex];
+    switch (object.type) {
+        case PdoDataType::U8:
+            sub.Write(static_cast<uint8_t>(object.value), ec);
+            return;
+        case PdoDataType::I8:
+            sub.Write(static_cast<int8_t>(object.value), ec);
+            return;
+        case PdoDataType::U16:
+            sub.Write(static_cast<uint16_t>(object.value), ec);
+            return;
+        case PdoDataType::I16:
+            sub.Write(static_cast<int16_t>(object.value), ec);
+            return;
+        case PdoDataType::U32:
+            sub.Write(static_cast<uint32_t>(object.value), ec);
+            return;
+        case PdoDataType::I32:
+            sub.Write(static_cast<int32_t>(object.value), ec);
+            return;
+    }
+}
+
+void MotorDriver::decodeFeedbackObject(uint16_t index, int64_t raw) {
+    switch (index) {
+        case ds402::od::statusword:
+            feedback_.statusword = static_cast<uint16_t>(raw);
+            feedback_.state = ds402::decodeState(feedback_.statusword);
+            break;
+        case ds402::od::modes_of_operation_display:
+            feedback_.mode = static_cast<ds402::OperationMode>(
+                static_cast<int8_t>(raw));
+            break;
+        case ds402::od::position_actual_value:
+            feedback_.position = static_cast<int32_t>(raw);
+            break;
+        case ds402::od::velocity_actual_value:
+            feedback_.velocity = static_cast<int32_t>(raw);
+            break;
+        case ds402::od::torque_actual_value:
+            feedback_.torque = static_cast<int16_t>(raw);
+            break;
+        case ds402::od::error_code:
+            feedback_.error_code = static_cast<uint16_t>(raw);
+            break;
+        default:
+            break;  // mapped but not a named field of ds402::Feedback
+    }
+}
 
 ds402::DriveController& MotorDriver::drive() {
     return drive_;
@@ -81,6 +248,7 @@ bool MotorDriver::isCommandObject(uint16_t index) const {
         case ds402::od::modes_of_operation:
         case ds402::od::target_position:
         case ds402::od::target_velocity:
+        case ds402::od::target_torque:
         case ds402::od::profile_velocity:
         case ds402::od::profile_acceleration:
         case ds402::od::profile_deceleration:
@@ -138,9 +306,14 @@ int32_t MotorDriver::readI32(uint16_t index, uint8_t subindex) {
     return Wait(AsyncRead<int32_t>(index, subindex));
 }
 
+// Command writes are staged, not sent immediately: if the object rides in an
+// active RxPDO its value is buffered and streamed on the next SYNC; if it is a
+// DS402 command object that is not currently mapped it is dropped (those objects
+// are PDO-only on this firmware and abort SDO downloads); anything else falls
+// back to a blocking SDO write (configuration objects).
 void MotorDriver::writeU8(uint16_t index, uint8_t subindex, uint8_t value) {
-    if (index == ds402::od::modes_of_operation) {
-        command_.mode = static_cast<int8_t>(value);
+    if (auto* object = findCommand(index)) {
+        object->value = value;
         return;
     }
     if (isCommandObject(index)) {
@@ -150,8 +323,8 @@ void MotorDriver::writeU8(uint16_t index, uint8_t subindex, uint8_t value) {
 }
 
 void MotorDriver::writeU16(uint16_t index, uint8_t subindex, uint16_t value) {
-    if (index == ds402::od::controlword) {
-        command_.controlword = value;
+    if (auto* object = findCommand(index)) {
+        object->value = value;
         return;
     }
     if (isCommandObject(index)) {
@@ -161,18 +334,9 @@ void MotorDriver::writeU16(uint16_t index, uint8_t subindex, uint16_t value) {
 }
 
 void MotorDriver::writeU32(uint16_t index, uint8_t subindex, uint32_t value) {
-    switch (index) {
-        case ds402::od::profile_velocity:
-            command_.profile_velocity = value;
-            return;
-        case ds402::od::profile_acceleration:
-            command_.profile_acceleration = value;
-            return;
-        case ds402::od::profile_deceleration:
-            command_.profile_deceleration = value;
-            return;
-        default:
-            break;
+    if (auto* object = findCommand(index)) {
+        object->value = value;
+        return;
     }
     if (isCommandObject(index)) {
         return;
@@ -181,12 +345,8 @@ void MotorDriver::writeU32(uint16_t index, uint8_t subindex, uint32_t value) {
 }
 
 void MotorDriver::writeI32(uint16_t index, uint8_t subindex, int32_t value) {
-    if (index == ds402::od::target_position) {
-        command_.target_position = value;
-        return;
-    }
-    if (index == ds402::od::target_velocity) {
-        command_.target_velocity = value;
+    if (auto* object = findCommand(index)) {
+        object->value = value;
         return;
     }
     if (isCommandObject(index)) {
@@ -345,34 +505,16 @@ void MotorDriver::OnSync(uint8_t /*counter*/, const time_point& /*time*/) noexce
 
     std::error_code ec;
 
-    // Refresh the cached feedback from the objects the drive maps into its
+    // Refresh the cached feedback from every object the drive maps into its
     // TPDOs. These reads never hit the bus; they snapshot the last received PDO.
+    // The set of objects is whatever the profile mapped, not a fixed list.
     if (rpdo_seen_) {
-        const auto statusword =
-            rpdo_mapped[ds402::od::statusword][0].Read<uint16_t>(ec);
-        if (!ec) {
-            feedback_.statusword = statusword;
-            feedback_.state = ds402::decodeState(statusword);
-        }
-        const auto mode =
-            rpdo_mapped[ds402::od::modes_of_operation_display][0].Read<int8_t>(ec);
-        if (!ec) {
-            feedback_.mode = static_cast<ds402::OperationMode>(mode);
-        }
-        const auto position =
-            rpdo_mapped[ds402::od::position_actual_value][0].Read<int32_t>(ec);
-        if (!ec) {
-            feedback_.position = position;
-        }
-        const auto velocity =
-            rpdo_mapped[ds402::od::velocity_actual_value][0].Read<int32_t>(ec);
-        if (!ec) {
-            feedback_.velocity = velocity;
-        }
-        const auto torque =
-            rpdo_mapped[ds402::od::torque_actual_value][0].Read<int16_t>(ec);
-        if (!ec) {
-            feedback_.torque = torque;
+        for (auto& object : feedback_objects_) {
+            const auto raw = readMappedObject(object, ec);
+            if (!ec) {
+                object.value = raw;
+                decodeFeedbackObject(object.index, raw);
+            }
         }
     }
 
@@ -380,25 +522,25 @@ void MotorDriver::OnSync(uint8_t /*counter*/, const time_point& /*time*/) noexce
         return;
     }
 
-    // While bringing CSP up, keep the commanded target glued to the measured
-    // position so the drive never sees a position step when it transitions to
-    // operation enabled.
-    if (csp_track_actual_ && rpdo_seen_) {
-        command_.target_position = feedback_.position;
+    // While bringing a position mode up, keep the commanded target glued to the
+    // measured position so the drive never sees a step when it transitions to
+    // operation enabled. Only meaningful when target position is in the stream.
+    if (csp_track_actual_ && rpdo_seen_ && hasCommand(ds402::od::target_position)) {
+        setCommandValue(ds402::od::target_position, feedback_.position);
     }
 
-    // Drive the controlled shutdown ramp (quick stop -> disable voltage) using
-    // the live feedback, so the updated controlword goes out on this same cycle.
+    // Drive the controlled shutdown (disable voltage) from the live feedback so
+    // the updated controlword goes out on this same cycle.
     if (stop_phase_ != StopPhase::None && stop_phase_ != StopPhase::Done) {
         advanceGracefulStop();
     }
 
-    // Emit the command image every cycle. In the CSP layout the master's RPDO1
-    // carries controlword + target position only; writing both together keeps
-    // the synchronous frame coherent. The mode rides outside the cyclic stream
-    // (set once via its persisted value) per the vendor recipe.
-    tpdo_mapped[ds402::od::controlword][0].Write(static_cast<uint16_t>(command_.controlword), ec);
-    tpdo_mapped[ds402::od::target_position][0].Write(static_cast<int32_t>(command_.target_position), ec);
+    // Emit the whole command image every cycle. A PDO is transmitted as one
+    // frame, so streaming every mapped command object together keeps each frame
+    // coherent and never zeros a neighbour that shares the PDO.
+    for (const auto& object : command_objects_) {
+        writeMappedObject(object, ec);
+    }
 }
 
 void MotorDriver::inspectNode() noexcept {
@@ -593,7 +735,7 @@ ds402::Feedback MotorDriver::waitForDriveState(ds402::State expected,
                     << " (statusword 0x" << std::hex << std::uppercase
                     << std::setw(4) << std::setfill('0') << feedback.statusword
                     << ", controlword 0x" << std::setw(4) << std::setfill('0')
-                    << command_.controlword << std::dec << ", drive TPDO "
+                    << commandValue(ds402::od::controlword) << std::dec << ", drive TPDO "
                     << (rpdo_seen_ ? "live" : "not received") << ")";
             throw std::runtime_error(message.str());
         }
@@ -605,43 +747,41 @@ ds402::Feedback MotorDriver::waitForDriveState(ds402::State expected,
 }
 
 void MotorDriver::primeCommandImage() {
-    // Seed the streamed image from the live drive (over SDO) so the first cyclic
-    // frames echo the drive's own setup and never zero a shared-PDO neighbour.
+    // Seed each mapped command object so the first cyclic frames are safe and
+    // never zero a shared-PDO neighbour. Defaults are 0 (no motion); the target
+    // position is seeded to the live measured position so a position mode holds
+    // still at enable, and configuration objects that happen to be streamed are
+    // seeded from their persisted value over SDO.
     std::error_code ec;
 
-    const auto mode =
-        Wait(AsyncRead<uint8_t>(ds402::od::modes_of_operation_display, 0), ec);
-    if (!ec) {
-        command_.mode = static_cast<int8_t>(mode);
-    }
-    const auto position =
-        Wait(AsyncRead<int32_t>(ds402::od::position_actual_value, 0), ec);
-    if (!ec) {
-        command_.target_position = position;
-    }
-    command_.target_velocity = 0;
-
-    const auto profile_velocity =
-        Wait(AsyncRead<uint32_t>(ds402::od::profile_velocity, 0), ec);
-    if (!ec) {
-        command_.profile_velocity = profile_velocity;
-    }
-    const auto profile_acceleration =
-        Wait(AsyncRead<uint32_t>(ds402::od::profile_acceleration, 0), ec);
-    if (!ec) {
-        command_.profile_acceleration = profile_acceleration;
-    }
-    const auto profile_deceleration =
-        Wait(AsyncRead<uint32_t>(ds402::od::profile_deceleration, 0), ec);
-    if (!ec) {
-        command_.profile_deceleration = profile_deceleration;
+    for (auto& object : command_objects_) {
+        object.value = 0;
     }
 
-    command_.controlword = ds402::controlword::shutdown;
+    if (hasCommand(ds402::od::target_position)) {
+        const auto position =
+            Wait(AsyncRead<int32_t>(ds402::od::position_actual_value, 0), ec);
+        if (!ec) {
+            setCommandValue(ds402::od::target_position, position);
+        }
+    }
+
+    for (const uint16_t index : {ds402::od::profile_velocity,
+                                 ds402::od::profile_acceleration,
+                                 ds402::od::profile_deceleration}) {
+        if (hasCommand(index)) {
+            const auto value = Wait(AsyncRead<uint32_t>(index, 0), ec);
+            if (!ec) {
+                setCommandValue(index, value);
+            }
+        }
+    }
+
+    setCommandValue(ds402::od::controlword, ds402::controlword::shutdown);
 }
 
 void MotorDriver::setControlword(uint16_t controlword) {
-    command_.controlword = controlword;
+    setCommandValue(ds402::od::controlword, controlword);
 }
 
 void MotorDriver::setStoppedCallback(std::function<void()> on_stopped) {
@@ -725,7 +865,7 @@ void MotorDriver::advanceGracefulStop() {
         std::cout << "graceful stop: waiting for drive to de-energize; state="
                   << ds402::toString(feedback_.state) << " statusword=";
         writeHex(std::cout, feedback_.statusword, 4) << " controlword=";
-        writeHex(std::cout, command_.controlword, 4)
+        writeHex(std::cout, static_cast<uint32_t>(commandValue(ds402::od::controlword)), 4)
             << " torque=" << static_cast<int>(feedback_.torque)
             << " velocity=" << feedback_.velocity << '\n';
         stop_log_due_ = now + kPowerOffRetryLogInterval;
@@ -784,7 +924,7 @@ void MotorDriver::enableDrive(bool prime_csp_target) {
         setControlword(ds402::controlword::enable_operation);
         csp_track_actual_ = false;
         std::cout << "  drive already in operation enabled; holding position "
-                  << command_.target_position << '\n';
+                  << commandValue(ds402::od::target_position) << '\n';
         return;
     }
 
@@ -819,7 +959,7 @@ void MotorDriver::enableDrive(bool prime_csp_target) {
 
     if (csp_mode) {
         std::cout << "  holding current position at "
-                  << command_.target_position << '\n';
+                  << commandValue(ds402::od::target_position) << '\n';
     }
 }
 

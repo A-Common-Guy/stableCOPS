@@ -135,14 +135,23 @@ in `*.summary.json`, and that `OnConfig` reads back from the summary (via
 frame, the master must never update one mapped object in isolation: doing so
 would send stale or zero values for that object's PDO neighbours.
 
-`MotorDriver` therefore keeps a single `CommandImage` and emits the *entire*
-RPDO1 image (controlword + target position) on every `OnSync`. Writes to other
-command objects update the image but are not streamed (they are not PDO-mapped
-in CSP). Feedback objects (`0x6041`, `0x6061`, `0x6064`, `0x606C`, `0x6077`)
-are cached from the received TPDOs in `OnSync` and returned without bus traffic.
-SDO is used only for configuration, identity, error code, and the one-time image
-seed at enable. The drive rejects SDO downloads to the command objects (vendor
-abort `0x00000002`); those must go over PDO at runtime.
+`MotorDriver` therefore runs a generic cyclic engine driven by the loaded
+`PdoMap`. At construction it snapshots the active RxPDO objects into a
+`command_objects_` list (each with its index, subindex, and CANopen type) and
+the active TxPDO objects into a `feedback_objects_` list. On every `OnSync` it
+reads *every* feedback object into a cache (decoding the known DS402 fields into
+`ds402::Feedback`) and writes *every* command object out as one coherent frame.
+Nothing in the cyclic path hardcodes which objects are mapped, so changing the
+PDO layout in the profile is enough to change what the master streams and
+decodes — CSV/CST/PP only need their target object mapped in the profile.
+
+Command writes from `DriveController` are staged, not sent immediately: a write
+to a mapped command object updates its buffered value (streamed next SYNC); a
+write to a DS402 command object that is *not* currently mapped is dropped (those
+objects are PDO-only on this firmware and abort SDO downloads with
+`0x00000002`); any other object falls back to a blocking SDO write. Feedback
+objects are returned from the cache without bus traffic. SDO is used only for
+configuration, identity, error code, and the one-time image seed at enable.
 
 ### Drive configuration (pre-operational)
 

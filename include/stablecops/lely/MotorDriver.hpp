@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <system_error>
+#include <vector>
 
 #include <lely/coapp/fiber_driver.hpp>
 
@@ -24,18 +25,19 @@ struct BootActionConfig {
     std::chrono::milliseconds state_transition_timeout{2000};
 };
 
-// Coherent snapshot of every command object the master transmits to the drive.
-// The vendor groups several command objects into each RPDO, so the master must
-// always emit a full, consistent image; updating a single object in isolation
-// would zero its PDO neighbours on the wire.
-struct CommandImage {
-    uint16_t controlword{0x0006};       // 0x6040
-    int8_t mode{0};                     // 0x6060 modes of operation
-    int32_t target_position{0};         // 0x607A
-    int32_t target_velocity{0};         // 0x60FF
-    uint32_t profile_velocity{0};       // 0x6081
-    uint32_t profile_acceleration{0};   // 0x6083
-    uint32_t profile_deceleration{0};   // 0x6084
+// CANopen integer type of a PDO-mapped object, derived from its bit length and
+// signedness. Used to read/write each mapped object with the correct width and
+// sign on the cyclic path.
+enum class PdoDataType { U8, I8, U16, I16, U32, I32 };
+
+// One object that rides in a cyclic PDO, keyed by (index, subindex). For command
+// objects `value` holds the latest commanded value the master streams; for
+// feedback objects it holds the most recently received raw value.
+struct CyclicObject {
+    uint16_t index{0};
+    uint8_t subindex{0};
+    PdoDataType type{PdoDataType::U32};
+    int64_t value{0};
 };
 
 class MotorDriver final : public ::lely::canopen::FiberDriver,
@@ -95,13 +97,27 @@ private:
     bool isCommandObject(uint16_t index) const;
     bool isFeedbackObject(uint16_t index) const;
 
+    // Cyclic exchange driven entirely by the loaded PdoMap.
+    void buildCyclicObjects();
+    CyclicObject* findCommand(uint16_t index);
+    const CyclicObject* findCommand(uint16_t index) const;
+    bool hasCommand(uint16_t index) const;
+    int64_t commandValue(uint16_t index) const;
+    void setCommandValue(uint16_t index, int64_t value);
+    int64_t readMappedObject(const CyclicObject& object, std::error_code& ec);
+    void writeMappedObject(const CyclicObject& object, std::error_code& ec);
+    void decodeFeedbackObject(uint16_t index, int64_t raw);
+
     ds402::DriveController drive_;
     BootActionConfig boot_actions_;
     config::PdoMap pdo_map_;
 
     enum class StopPhase { None, DisableVoltage, Done };
 
-    CommandImage command_;
+    // Active RxPDO objects the master transmits to the drive (commands) and
+    // active TxPDO objects it receives (feedback), built once from pdo_map_.
+    std::vector<CyclicObject> command_objects_;
+    std::vector<CyclicObject> feedback_objects_;
     ds402::Feedback feedback_;
     bool cyclic_active_{false};
     bool csp_track_actual_{false};
