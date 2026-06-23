@@ -10,6 +10,10 @@ namespace stablecops::app {
 struct MotorConfig {
     std::string can_interface{"can0"};
     std::string master_dcf_path{"dcf/master.dcf"};
+    // Generated PDO layout summary; the single source of truth for which
+    // objects ride in each RxPDO/TxPDO. Generated alongside master.dcf from the
+    // motor profile, so both ends of the bus stay coherent.
+    std::string summary_path{"generated/canopen/euservo_rp/euservo_rp.summary.json"};
     uint8_t master_node_id{127};
     uint8_t node_id{1};
     bool inspect_on_boot{false};

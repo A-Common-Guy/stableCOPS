@@ -11,6 +11,7 @@ int main(int argc, char** argv) {
 
     const auto print_usage = [] {
         std::cerr << "usage: stablecops_master [--can can0] [--dcf dcf/master.dcf] "
+                     "[--summary generated/.../<name>.summary.json] "
                      "[--master-node 127] [--node 1] [--inspect] [--enable] "
                      "[--hold-position] [--csp-target counts] [--csp-relative counts] "
                      "[--max-position-step counts] [--run]\n";
@@ -32,6 +33,8 @@ int main(int argc, char** argv) {
             config.can_interface = argv[++i];
         } else if (arg == "--dcf" && i + 1 < argc) {
             config.master_dcf_path = argv[++i];
+        } else if (arg == "--summary" && i + 1 < argc) {
+            config.summary_path = argv[++i];
         } else if (arg == "--master-node" && i + 1 < argc) {
             config.master_node_id = static_cast<uint8_t>(std::stoi(argv[++i]));
         } else if (arg == "--node" && i + 1 < argc) {
@@ -63,7 +66,8 @@ int main(int argc, char** argv) {
         << "Enable on boot: " << (config.enable_on_boot ? "yes" : "no") << '\n'
         << "Hold position: " << (config.hold_position_on_boot ? "yes" : "no") << '\n'
         << "Max position step: " << config.max_position_step << " counts\n"
-        << "Master DCF: " << config.master_dcf_path << '\n';
+        << "Master DCF: " << config.master_dcf_path << '\n'
+        << "PDO summary: " << config.summary_path << '\n';
 
     if (!run) {
         std::cout << "\nPass --run to open SocketCAN and start the Lely master.\n";

@@ -8,6 +8,7 @@
 
 #include <lely/coapp/fiber_driver.hpp>
 
+#include "stablecops/config/PdoMap.hpp"
 #include "stablecops/ds402/DriveController.hpp"
 #include "stablecops/ds402/ObjectAccess.hpp"
 
@@ -42,16 +43,17 @@ class MotorDriver final : public ::lely::canopen::FiberDriver,
 public:
     MotorDriver(::lely::canopen::AsyncMaster& master,
                 uint8_t node_id,
-                BootActionConfig boot_actions);
+                BootActionConfig boot_actions,
+                config::PdoMap pdo_map);
 
     ds402::DriveController& drive();
     const ds402::DriveController& drive() const;
 
-    // Begin a controlled, non-blocking shutdown: quick-stop the drive, then drop
-    // the power stage, and invoke the stopped-callback once it is safely
-    // de-energised (or after a bounded timeout). Safe to call from the event
-    // loop (e.g. a signal handler); the ramp-down is driven from OnSync so SYNC
-    // keeps flowing while the drive decelerates.
+    // Begin a non-blocking shutdown: immediately command disable-voltage so the
+    // power stage drops and the joint goes limp (coasts, no brake), then invoke
+    // the stopped-callback once it is confirmed de-energised or after a bounded
+    // timeout. Safe to call from the event loop (e.g. a signal handler); the
+    // disable command is streamed from OnSync so SYNC keeps flowing meanwhile.
     void requestGracefulStop();
     void setStoppedCallback(std::function<void()> on_stopped);
 
@@ -75,7 +77,7 @@ protected:
 
 private:
     bool wantsMotionAction() const;
-    std::error_code configureDriveForCsp() noexcept;
+    std::error_code configurePdos() noexcept;
     void inspectNode() noexcept;
     void runBootActions() noexcept;
     ds402::Feedback waitForDriveState(ds402::State expected,
@@ -95,8 +97,9 @@ private:
 
     ds402::DriveController drive_;
     BootActionConfig boot_actions_;
+    config::PdoMap pdo_map_;
 
-    enum class StopPhase { None, QuickStop, DisableVoltage, Observe, Done };
+    enum class StopPhase { None, DisableVoltage, Done };
 
     CommandImage command_;
     ds402::Feedback feedback_;

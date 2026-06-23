@@ -104,7 +104,11 @@ not hand-edit them; update the vendor EDS/profile and regenerate.
 ## Runtime Contract
 
 The generated DCF and summary own profile-specific PDO knowledge. Runtime C++
-code should not hardcode RPDO/TPDO map indexes or vendor-specific boot writes.
+code does not hardcode RPDO/TPDO map indexes: at start-up the runtime loads the
+generated `*.summary.json` (`--summary`, defaulting to the euservo_rp profile)
+into a `stablecops::config::PdoMap`, and `OnConfig` programs the drive directly
+from that map. Pick a different motor at runtime by pointing `--dcf`/`--summary`
+at its generated artifacts.
 
 `stablecops::ds402::DriveController` works in DS402 object terms: controlword,
 statusword, operation mode, target position, velocity, and torque. SDO remains
@@ -125,8 +129,9 @@ object out of the cyclic stream and uses:
 - **TPDO1** = `0x6041` statusword + `0x6061` mode display + `0x6077` torque
 - **TPDO2** = `0x6064` position + `0x606C` velocity
 
-This is the layout the generator emits (`eds_overrides` in the profile) and the
-layout `OnConfig` programs on the drive. Because a PDO is transmitted as a whole
+This is the layout the generator emits (`eds_overrides` in the profile), records
+in `*.summary.json`, and that `OnConfig` reads back from the summary (via
+`config::PdoMap`) to program on the drive. Because a PDO is transmitted as a whole
 frame, the master must never update one mapped object in isolation: doing so
 would send stale or zero values for that object's PDO neighbours.
 

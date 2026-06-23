@@ -1,5 +1,7 @@
 #include "stablecops/app/CanopenApplication.hpp"
 
+#include "stablecops/config/PdoMap.hpp"
+
 #include <lely/coapp/master.hpp>
 #include <lely/ev/loop.hpp>
 #include <lely/io2/ctx.hpp>
@@ -46,14 +48,15 @@ public:
           timer_(poll_, executor_, CLOCK_MONOTONIC),
           shutdown_timer_(poll_, executor_, CLOCK_MONOTONIC),
           master_(timer_, channel_, config.master_dcf_path, "", config.master_node_id),
-          motor_(master_, config.node_id, makeBootActions(config)),
+          motor_(master_, config.node_id, makeBootActions(config),
+                 stablecops::config::loadPdoMapFromSummary(config.summary_path)),
           sigset_(poll_, executor_) {
         channel_.open(controller_);
 
-        // On a clean shutdown signal, ramp the drive down before stopping the
+        // On a clean shutdown signal, de-energise the drive before stopping the
         // loop so the joint is never left energised when the master exits.
         motor_.setStoppedCallback([this, node_id = config.node_id] {
-            stopNodeThenExit(node_id);
+            resetNodeThenExit(node_id);
         });
         sigset_.insert(SIGINT);
         sigset_.insert(SIGTERM);
@@ -77,8 +80,12 @@ public:
         });
     }
 
-    void stopNodeThenExit(uint8_t node_id) {
-        master_.Command(::lely::canopen::NmtCommand::STOP, node_id);
+    void resetNodeThenExit(uint8_t node_id) {
+        // Reset the node as a guaranteed final de-energise: it forces the drive
+        // back through initialisation, which drops the power stage regardless of
+        // whether the DS402 disable-voltage sequence completed. Give the frame a
+        // moment to reach the drive before tearing the master down.
+        master_.Command(::lely::canopen::NmtCommand::RESET_NODE, node_id);
         shutdown_timer_.settime(std::chrono::milliseconds{50});
         shutdown_timer_.submit_wait(
             executor_,

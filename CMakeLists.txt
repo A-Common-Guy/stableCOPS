@@ -30,6 +30,15 @@ target_include_directories(stablecops_ds402 PUBLIC
 )
 target_link_libraries(stablecops_ds402 PUBLIC stablecops_lely_project_options)
 
+add_library(stablecops_config
+    src/config/PdoMap.cpp
+)
+target_include_directories(stablecops_config
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+target_link_libraries(stablecops_config PUBLIC stablecops_lely_project_options)
+
 add_library(stablecops_runtime
     src/app/CanopenApplication.cpp
     src/lely/MotorDriver.cpp
@@ -37,7 +46,7 @@ add_library(stablecops_runtime
 target_include_directories(stablecops_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(stablecops_runtime PUBLIC stablecops_ds402)
+target_link_libraries(stablecops_runtime PUBLIC stablecops_ds402 stablecops_config)
 
 add_executable(stablecops_master
     src/tools/stablecops_master.cpp
