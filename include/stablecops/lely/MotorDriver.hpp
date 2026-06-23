@@ -47,6 +47,14 @@ public:
     ds402::DriveController& drive();
     const ds402::DriveController& drive() const;
 
+    // Begin a controlled, non-blocking shutdown: quick-stop the drive, then drop
+    // the power stage, and invoke the stopped-callback once it is safely
+    // de-energised (or after a bounded timeout). Safe to call from the event
+    // loop (e.g. a signal handler); the ramp-down is driven from OnSync so SYNC
+    // keeps flowing while the drive decelerates.
+    void requestGracefulStop();
+    void setStoppedCallback(std::function<void()> on_stopped);
+
     uint8_t readU8(uint16_t index, uint8_t subindex) override;
     uint16_t readU16(uint16_t index, uint8_t subindex) override;
     uint32_t readU32(uint16_t index, uint8_t subindex) override;
@@ -78,6 +86,9 @@ private:
     void enableDrive(bool hold_position);
     void applyCspTarget();
     void setControlword(uint16_t controlword);
+    void advanceGracefulStop();
+    bool isDriveDeEnergized() const;
+    void finishGracefulStop();
 
     bool isCommandObject(uint16_t index) const;
     bool isFeedbackObject(uint16_t index) const;
@@ -85,12 +96,19 @@ private:
     ds402::DriveController drive_;
     BootActionConfig boot_actions_;
 
+    enum class StopPhase { None, QuickStop, DisableVoltage, Observe, Done };
+
     CommandImage command_;
     ds402::Feedback feedback_;
     bool cyclic_active_{false};
     bool csp_track_actual_{false};
     bool rpdo_seen_{false};
     uint64_t sync_count_{0};
+
+    StopPhase stop_phase_{StopPhase::None};
+    std::chrono::steady_clock::time_point stop_phase_deadline_{};
+    std::chrono::steady_clock::time_point stop_log_due_{};
+    std::function<void()> on_stopped_{};
 };
 
 }  // namespace stablecops::lely

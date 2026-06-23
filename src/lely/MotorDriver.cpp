@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <ostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -34,20 +35,35 @@ struct PdoSetup {
     uint8_t entry_count;
 };
 
-constexpr std::array<PdoSetup, 5> kPdoSetup{{
+// CSP layout (vendor manual Table 5-5 / 3.6.1): RxPDO1 carries controlword and
+// target position only. The EDS-default RxPDO1 (controlword + target velocity +
+// modes) is rejected by the firmware during bring-up, so RPDO2/RPDO3 are left
+// disabled and the mode object stays out of the cyclic stream. TPDO feedback is
+// kept at the vendor default so all feedback objects remain PDO-mapped.
+constexpr std::array<PdoSetup, 3> kPdoSetup{{
     {"RPDO1", 0x1400, 0x1600, 0x201, 1,
-     {0x60400010u, 0x60FF0020u, 0x60600008u, 0u}, 3},
-    {"RPDO2", 0x1401, 0x1601, 0x301, 1,
-     {0x607A0020u, 0x60810020u, 0u, 0u}, 2},
-    {"RPDO3", 0x1402, 0x1602, 0x401, 1,
-     {0x60830020u, 0x60840020u, 0u, 0u}, 2},
+     {0x60400010u, 0x607A0020u, 0u, 0u}, 2},
     {"TPDO1", 0x1800, 0x1A00, 0x181, 1,
      {0x60410010u, 0x60610008u, 0x60770010u, 0u}, 3},
     {"TPDO2", 0x1801, 0x1A01, 0x281, 1,
      {0x60640020u, 0x606C0020u, 0u, 0u}, 2},
 }};
 
+// RPDOs the master no longer transmits in CSP; disable them on the drive so it
+// does not act on stale frames. {communication index, base COB-ID}.
+constexpr std::array<std::pair<uint16_t, uint32_t>, 2> kPdoDisable{{
+    {0x1401, 0x301},
+    {0x1402, 0x401},
+}};
+
 constexpr uint32_t kCobIdValidMask = 0x80000000u;
+
+// Below this measured speed (velocity actual value, 0x606C raw counts) the joint
+// is treated as stopped during a graceful shutdown, so the power stage can be
+// dropped without waiting out the full quick-stop ramp timeout.
+constexpr int32_t kStopVelocityEpsilon = 50;
+constexpr auto kPowerOffObserveTime = std::chrono::seconds(1);
+constexpr auto kPowerOffRetryLogInterval = std::chrono::milliseconds(500);
 
 std::ostream& writeHex(std::ostream& stream, uint32_t value, int width) {
     const auto flags = stream.flags();
@@ -263,12 +279,13 @@ std::error_code MotorDriver::configureDriveForCsp() noexcept {
         return !ec;
     };
 
-    // Force cyclic synchronous position mode before the state machine moves.
-    if (!download(ds402::od::modes_of_operation, ds402::od::default_subindex,
-                  static_cast<int8_t>(8), "modes of operation")) {
-        return ec;
-    }
-
+    // Note: the modes-of-operation object (0x6060) is NOT written here. On this
+    // firmware the DS402 command objects (0x6040/0x6060/0x607A/...) reject SDO
+    // downloads with vendor abort 0x00000002 ("PDO mapped only"). The drive's
+    // persisted mode is already 8 (CSP), and the vendor recipe keeps 0x6060 out
+    // of the cyclic stream entirely (streaming it while not enabled makes the
+    // firmware reject the whole RxPDO1). Only the PDO communication/mapping
+    // parameters below are SDO-writable, configured here while pre-operational.
     for (const auto& pdo : kPdoSetup) {
         // Disable the PDO before touching its parameters, set the transmission
         // type, rewrite the mapping from scratch, then re-enable it. Rewriting
@@ -307,6 +324,16 @@ std::error_code MotorDriver::configureDriveForCsp() noexcept {
         std::cout << "  " << pdo.label << " set to transmission type "
                   << static_cast<int>(pdo.transmission_type) << ", "
                   << static_cast<int>(pdo.entry_count) << " mapped objects\n";
+    }
+
+    for (const auto& [comm_index, cob_id] : kPdoDisable) {
+        if (!download(comm_index, 0x01,
+                      static_cast<uint32_t>(cob_id | kCobIdValidMask),
+                      "PDO COB-ID (disable)")) {
+            return ec;
+        }
+        std::cout << "  RPDO at 0x" << std::hex << comm_index << std::dec
+                  << " disabled (unused in CSP)\n";
     }
 
     return {};
@@ -365,16 +392,18 @@ void MotorDriver::OnSync(uint8_t /*counter*/, const time_point& /*time*/) noexce
         command_.target_position = feedback_.position;
     }
 
-    // Emit the entire command image every cycle. Writing all mapped objects
-    // together guarantees the synchronous RPDOs leaving on the next SYNC carry
-    // a coherent frame instead of zeroing a neighbour of whatever changed.
+    // Drive the controlled shutdown ramp (quick stop -> disable voltage) using
+    // the live feedback, so the updated controlword goes out on this same cycle.
+    if (stop_phase_ != StopPhase::None && stop_phase_ != StopPhase::Done) {
+        advanceGracefulStop();
+    }
+
+    // Emit the command image every cycle. In the CSP layout the master's RPDO1
+    // carries controlword + target position only; writing both together keeps
+    // the synchronous frame coherent. The mode rides outside the cyclic stream
+    // (set once via its persisted value) per the vendor recipe.
     tpdo_mapped[ds402::od::controlword][0].Write(static_cast<uint16_t>(command_.controlword), ec);
-    tpdo_mapped[ds402::od::modes_of_operation][0].Write(static_cast<int8_t>(command_.mode), ec);
-    tpdo_mapped[ds402::od::target_velocity][0].Write(static_cast<int32_t>(command_.target_velocity), ec);
     tpdo_mapped[ds402::od::target_position][0].Write(static_cast<int32_t>(command_.target_position), ec);
-    tpdo_mapped[ds402::od::profile_velocity][0].Write(static_cast<uint32_t>(command_.profile_velocity), ec);
-    tpdo_mapped[ds402::od::profile_acceleration][0].Write(static_cast<uint32_t>(command_.profile_acceleration), ec);
-    tpdo_mapped[ds402::od::profile_deceleration][0].Write(static_cast<uint32_t>(command_.profile_deceleration), ec);
 }
 
 void MotorDriver::inspectNode() noexcept {
@@ -475,16 +504,46 @@ void MotorDriver::inspectNode() noexcept {
                       << '\n';
         }
         read_u8(comm_index, 0x02, "  transmission type");
-        read_u8(map_index, 0x00, "  mapped object count");
+        const auto [count, count_ok] = read_u8(map_index, 0x00, "  mapped object count");
+        if (count_ok) {
+            for (uint8_t sub = 1; sub <= count && sub <= 8; ++sub) {
+                read_u32(map_index, sub, "  mapping entry");
+            }
+        }
     };
 
     dump_pdo("TPDO1 COB-ID", 0x1800, 0x1A00);
     dump_pdo("TPDO2 COB-ID", 0x1801, 0x1A01);
     dump_pdo("RPDO1 COB-ID", 0x1400, 0x1600);
     dump_pdo("RPDO2 COB-ID", 0x1401, 0x1601);
+    dump_pdo("RPDO3 COB-ID", 0x1402, 0x1602);
 
     read_u16(0x1017, 0x00, "producer heartbeat time");
     read_u32(0x1005, 0x00, "SYNC COB-ID");
+
+    // Disable / brake behaviour. These govern what happens to motor torque when
+    // the drive leaves Operation Enabled: the manufacturer "active disable"
+    // block keeps the motor energised to hold the load for a configured window,
+    // and the standard option codes select the ramp used for each transition.
+    // 0x60FE reveals whether a holding brake is driven from a digital output.
+    std::cout << " disable / brake configuration\n";
+    read_u8(0x2103, 0x00, "disable mode");
+    read_u32(0x2104, 0x00, "active disable speed threshold");
+    read_u32(0x2105, 0x00, "active disable delay");
+    read_u16(0x2106, 0x00, "active disable time");
+    read_u32(0x2107, 0x00, "active disable deceleration");
+    read_u16(0x2108, 0x00, "active disable deceleration time");
+    read_u16(0x605A, 0x00, "quick stop option code");
+    read_u16(0x605B, 0x00, "shutdown option code");
+    read_u16(0x605C, 0x00, "disable operation option code");
+    read_u32(0x6085, 0x00, "quick stop deceleration");
+    read_u32(0x60FE, 0x01, "digital outputs (physical)");
+    read_u32(0x60FE, 0x02, "digital outputs (mask)");
+
+    std::cout << " vendor runtime monitors\n";
+    read_u8(0x2706, 0x00, "drive enable status");
+    read_u8(0x2709, 0x00, "system state machine state");
+    read_u8(0x270A, 0x00, "motor run loop state");
 }
 
 bool MotorDriver::wantsMotionAction() const {
@@ -516,6 +575,10 @@ ds402::Feedback MotorDriver::waitForDriveState(ds402::State expected,
     auto feedback = drive_.readFeedback();
 
     while (true) {
+        if (stop_phase_ != StopPhase::None) {
+            throw std::runtime_error("graceful stop requested while waiting for " +
+                                     ds402::toString(expected));
+        }
         if (feedback.state == expected) {
             return feedback;
         }
@@ -529,8 +592,15 @@ ds402::Feedback MotorDriver::waitForDriveState(ds402::State expected,
                                      ds402::toString(expected));
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            throw std::runtime_error("timed out waiting for " + ds402::toString(expected) +
-                                     "; last state was " + ds402::toString(feedback.state));
+            std::ostringstream message;
+            message << "timed out waiting for " << ds402::toString(expected)
+                    << "; last state was " << ds402::toString(feedback.state)
+                    << " (statusword 0x" << std::hex << std::uppercase
+                    << std::setw(4) << std::setfill('0') << feedback.statusword
+                    << ", controlword 0x" << std::setw(4) << std::setfill('0')
+                    << command_.controlword << std::dec << ", drive TPDO "
+                    << (rpdo_seen_ ? "live" : "not received") << ")";
+            throw std::runtime_error(message.str());
         }
 
         USleep(static_cast<uint_least64_t>(
@@ -579,6 +649,121 @@ void MotorDriver::setControlword(uint16_t controlword) {
     command_.controlword = controlword;
 }
 
+void MotorDriver::setStoppedCallback(std::function<void()> on_stopped) {
+    on_stopped_ = std::move(on_stopped);
+}
+
+bool MotorDriver::isDriveDeEnergized() const {
+    return feedback_.state == ds402::State::SwitchOnDisabled ||
+           feedback_.state == ds402::State::NotReadyToSwitchOn;
+}
+
+void MotorDriver::finishGracefulStop() {
+    stop_phase_ = StopPhase::Done;
+    cyclic_active_ = false;
+    std::cout << "graceful stop: drive disabled (final state "
+              << ds402::toString(feedback_.state) << ", statusword=";
+    writeHex(std::cout, feedback_.statusword, 4) << ")\n";
+    if (on_stopped_) {
+        on_stopped_();
+    }
+}
+
+void MotorDriver::requestGracefulStop() {
+    if (stop_phase_ != StopPhase::None) {
+        return;  // shutdown already in progress
+    }
+
+    // If nothing is energised (inspect-only, idle, or a failed boot) there is no
+    // DS402 ramp-down to perform; hand control straight back to the caller.
+    if (!cyclic_active_) {
+        std::cout << "graceful stop: drive not energised; stopping master\n";
+        stop_phase_ = StopPhase::Done;
+        if (on_stopped_) {
+            on_stopped_();
+        }
+        return;
+    }
+
+    std::cout << "graceful stop: quick-stopping drive\n";
+    // Keep the commanded target glued to the measured position so the drive does
+    // not see a position step while it is still enabled and decelerating.
+    csp_track_actual_ = true;
+    setControlword(ds402::controlword::quick_stop);
+    stop_phase_ = StopPhase::QuickStop;
+    stop_phase_deadline_ =
+        std::chrono::steady_clock::now() + boot_actions_.state_transition_timeout;
+    stop_log_due_ = stop_phase_deadline_;
+}
+
+void MotorDriver::advanceGracefulStop() {
+    const auto now = std::chrono::steady_clock::now();
+    switch (stop_phase_) {
+        case StopPhase::QuickStop: {
+            // Wait until the joint has actually decelerated, then drop the power
+            // stage. We key off measured velocity (not a target state) because
+            // with quick-stop option code 6 the drive stays in Quick Stop Active
+            // and never reports Switch On Disabled on its own; the deadline is
+            // only a safety cap.
+            const int32_t speed = feedback_.velocity < 0 ? -feedback_.velocity
+                                                         : feedback_.velocity;
+            if (speed <= kStopVelocityEpsilon ||
+                isDriveDeEnergized() ||
+                now >= stop_phase_deadline_) {
+                std::cout << "graceful stop: commanding disable voltage\n";
+                setControlword(ds402::controlword::disable_voltage);
+                stop_phase_ = StopPhase::DisableVoltage;
+                stop_phase_deadline_ =
+                    now + boot_actions_.state_transition_timeout;
+                stop_log_due_ = stop_phase_deadline_;
+            }
+            break;
+        }
+        case StopPhase::DisableVoltage:
+            setControlword(ds402::controlword::disable_voltage);
+            if (isDriveDeEnergized()) {
+                csp_track_actual_ = false;
+                stop_phase_ = StopPhase::Observe;
+                stop_phase_deadline_ = now + kPowerOffObserveTime;
+                stop_log_due_ = now;  // log the first sample immediately
+                std::cout << "graceful stop: power stage commanded off (state "
+                          << ds402::toString(feedback_.state)
+                          << "); observing residual torque/velocity for 1s\n";
+            } else if (now >= stop_log_due_) {
+                std::cout << "graceful stop: waiting for drive to de-energize; state="
+                          << ds402::toString(feedback_.state)
+                          << " statusword=";
+                writeHex(std::cout, feedback_.statusword, 4)
+                    << " controlword=";
+                writeHex(std::cout, command_.controlword, 4)
+                    << " torque=" << static_cast<int>(feedback_.torque)
+                    << " velocity=" << feedback_.velocity << '\n';
+                stop_log_due_ = now + kPowerOffRetryLogInterval;
+            }
+            break;
+        case StopPhase::Observe:
+            setControlword(ds402::controlword::disable_voltage);
+            // Keep streaming the disable command and report live telemetry so we
+            // can tell a genuine zero-speed/active-disable hold (non-zero torque)
+            // apart from gearbox cogging on a truly de-energised joint.
+            if (now >= stop_log_due_) {
+                std::cout << "  [settle] state=" << ds402::toString(feedback_.state)
+                          << " statusword=";
+                writeHex(std::cout, feedback_.statusword, 4)
+                    << " torque=" << static_cast<int>(feedback_.torque)
+                    << " velocity=" << feedback_.velocity << '\n';
+                stop_log_due_ = now + std::chrono::milliseconds(200);
+            }
+            if (now >= stop_phase_deadline_) {
+                finishGracefulStop();
+            }
+            break;
+        case StopPhase::None:
+        case StopPhase::Done:
+            break;
+    }
+}
+
 void MotorDriver::enableDrive(bool prime_csp_target) {
     auto feedback = drive_.readFeedback();
     std::cout << "enabling DS402 operation from state "
@@ -620,6 +805,12 @@ void MotorDriver::enableDrive(bool prime_csp_target) {
             USleep(1000);
         }
     }
+
+    std::cout << "  cyclic streaming active: sync cycles=" << sync_count_
+              << ", drive TPDO feedback "
+              << (rpdo_seen_ ? "LIVE (cyclic)" : "NOT received (SDO fallback)")
+              << "; statusword=";
+    writeHex(std::cout, feedback_.statusword, 4) << '\n';
 
     if (feedback.state == ds402::State::OperationEnabled) {
         setControlword(ds402::controlword::enable_operation);

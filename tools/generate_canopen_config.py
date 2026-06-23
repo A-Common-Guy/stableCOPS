@@ -119,6 +119,43 @@ def normalize_eds(
     destination.write_text("\n".join(normalized_lines) + "\n", encoding="utf-8")
 
 
+def apply_eds_overrides(
+    path: Path,
+    overrides: dict[str, dict[str, str]],
+) -> None:
+    """Rewrite specific [section] key=value pairs in a normalized EDS.
+
+    Used to bend the vendor PDO layout into a profile-specified one (for example
+    the vendor's proven CSP RxPDO layout) without hand-editing generated files.
+    Only existing keys are replaced; the EDS structure is otherwise preserved.
+    """
+    if not overrides:
+        return
+
+    current_section = ""
+    output_lines: list[str] = []
+
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        section_match = SECTION_RE.match(line.strip())
+        if section_match:
+            current_section = section_match.group(1)
+            output_lines.append(line)
+            continue
+
+        body, comment = split_inline_comment(line)
+        key_match = KEY_VALUE_RE.match(body)
+        if key_match and current_section in overrides:
+            key = key_match.group(1).strip()
+            section_overrides = overrides[current_section]
+            if key in section_overrides:
+                output_lines.append(f"{key}={section_overrides[key]}{comment}")
+                continue
+
+        output_lines.append(line)
+
+    path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+
+
 def parse_eds_sections(path: Path) -> dict[str, dict[str, str]]:
     sections: dict[str, dict[str, str]] = {}
     current_section = ""
@@ -285,6 +322,8 @@ def main() -> int:
         normalized_eds,
         identity_policy=profile.get("identity_policy", "strict"),
     )
+
+    apply_eds_overrides(normalized_eds, profile.get("eds_overrides", {}) or {})
 
     dcfgen_config = build_dcfgen_yaml(profile, normalized_eds, root)
     dcfgen_yaml.write_text(yaml.safe_dump(dcfgen_config, sort_keys=False), encoding="utf-8")

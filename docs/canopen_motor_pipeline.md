@@ -112,46 +112,62 @@ the fallback for configuration and diagnostics.
 
 ### Command image and cyclic streaming
 
-The drive groups several command objects into each RPDO (for the PHU default,
-RPDO1 = `0x6040` controlword + `0x60FF` target velocity + `0x6060` modes;
-RPDO2 = `0x607A` target position + `0x6081` profile velocity; RPDO3 =
-`0x6083`/`0x6084`). Because a PDO is transmitted as a whole frame, the master
-must never update one mapped object in isolation: doing so would send stale or
-zero values for that object's PDO neighbours.
+The drive groups command objects into each RPDO. The EYou firmware **rejects**
+the EDS-default RxPDO1 (`0x6040` controlword + `0x60FF` target velocity +
+`0x6060` modes) during CSP bring-up: even with a correct controlword on the
+wire, the drive stays in *ready to switch on* and ignores every controlword
+(including `0x80` disable-voltage), which means it is discarding the whole
+frame. The vendor's proven CSP recipe (manual Table 5-5 / 3.6.1) keeps the mode
+object out of the cyclic stream and uses:
+
+- **RPDO1** = `0x6040` controlword + `0x607A` target position
+- RPDO2 / RPDO3: disabled (CSP only needs the target position, now in RPDO1)
+- **TPDO1** = `0x6041` statusword + `0x6061` mode display + `0x6077` torque
+- **TPDO2** = `0x6064` position + `0x606C` velocity
+
+This is the layout the generator emits (`eds_overrides` in the profile) and the
+layout `OnConfig` programs on the drive. Because a PDO is transmitted as a whole
+frame, the master must never update one mapped object in isolation: doing so
+would send stale or zero values for that object's PDO neighbours.
 
 `MotorDriver` therefore keeps a single `CommandImage` and emits the *entire*
-image on every `OnSync`. Writes to command objects (`0x6040`, `0x6060`,
-`0x607A`, `0x60FF`, `0x6081`, `0x6083`, `0x6084`) update the image rather than
-issuing one-shot PDO events; the synchronous RPDOs carry a coherent frame on the
-next SYNC. Feedback objects (`0x6041`, `0x6061`, `0x6064`, `0x606C`, `0x6077`)
+RPDO1 image (controlword + target position) on every `OnSync`. Writes to other
+command objects update the image but are not streamed (they are not PDO-mapped
+in CSP). Feedback objects (`0x6041`, `0x6061`, `0x6064`, `0x606C`, `0x6077`)
 are cached from the received TPDOs in `OnSync` and returned without bus traffic.
 SDO is used only for configuration, identity, error code, and the one-time image
-seed at enable. The drive rejects SDO downloads to the command objects *while it
-is operational*; those must go over PDO at runtime (see configuration below for
-why pre-operational SDO writes are still required and allowed).
+seed at enable. The drive rejects SDO downloads to the command objects (vendor
+abort `0x00000002`); those must go over PDO at runtime.
 
 ### Drive configuration (pre-operational)
 
 The PHU/RP drives ship with every PDO set to transmission type `0`
 (event-driven), so out of NVM they never stream TPDOs on SYNC and never run the
-cyclic RPDO exchange. They also reject SDO writes to command/PDO objects once the
-node is operational. The vendor bring-up recipe (manual Table 5-5) therefore
+cyclic RPDO exchange. PDO parameters are only reliably SDO-writable while the
+node is pre-operational. The vendor bring-up recipe (manual Table 5-5) therefore
 configures the drive *before* it is started.
 
 `MotorDriver::OnConfig` runs during the NMT boot "update configuration" step,
 which executes while the node is still pre-operational. When a motion action is
-requested (so `--inspect` stays read-only) it pushes, over SDO:
+requested (so `--inspect` stays read-only) it pushes, over SDO, for each active
+PDO (RPDO1, TPDO1, TPDO2): disable the PDO (set the COB-ID valid bit), set the
+transmission type to `1` (cyclic synchronous), rewrite the mapping from scratch,
+then re-enable it. RPDO2 and RPDO3 are explicitly disabled (COB-ID valid bit)
+because the master no longer transmits them in the CSP layout.
 
-- `0x6060 = 8` (cyclic synchronous position).
-- For each active PDO (RPDO1-3, TPDO1-2): disable the PDO (set the COB-ID valid
-  bit), set the transmission type to `1` (cyclic synchronous), rewrite the
-  mapping from scratch, then re-enable it.
+The COB-IDs and mappings written match `dcf/master.dcf` exactly (both are driven
+from the profile's `eds_overrides`), so both ends agree. Rewriting the whole
+mapping (not just the transmission type) also clears the stale/oversized mapping
+the drive otherwise reports straight from NVM. If configuration fails, the boot
+is aborted with the SDO abort code rather than starting a node that cannot
+communicate.
 
-The COB-IDs and mappings written are the vendor defaults and match
-`dcf/master.dcf` exactly, so both ends agree. Rewriting the whole mapping (not
-just the transmission type) also clears the stale/oversized mapping the drive
-otherwise reports straight from NVM. If configuration fails, the boot is aborted
-with the SDO abort code rather than starting a node that cannot communicate.
+The mode (`0x6060`) is deliberately **not** written here, and it is kept out of
+the cyclic RxPDO. On this firmware the DS402 command objects (`0x6040`,
+`0x6060`, `0x607A`, ...) are PDO-only: SDO downloads abort with the vendor code
+`0x00000002`. The drive's persisted mode is already `8` (CSP), so it does not
+need to be (re)written; streaming `0x6060` cyclically while the drive is not
+enabled is exactly what makes the firmware reject RxPDO1.
 
 ### Enable sequence
 
@@ -175,31 +191,31 @@ insufficient and the drive documentation confirms the remap sequence.
 When a transition stalls, confirm what is actually on the bus before changing
 code. The command frames and feedback frames are the ground truth.
 
-Watch the command RPDOs the master sends (`0x201/0x301/0x401`), the feedback
-TPDOs the drive sends (`0x181/0x281`), and SYNC (`0x080`):
+Watch the command RPDO the master sends (`0x201`), the feedback TPDOs the drive
+sends (`0x181/0x281`), and SYNC (`0x080`). In the CSP layout the master no
+longer transmits `0x301`/`0x401`:
 
 ```bash
-candump -tz can0,201:7FF can0,301:7FF can0,401:7FF can0,181:7FF can0,281:7FF can0,080:7FF
+candump -tz can0,201:7FF can0,181:7FF can0,281:7FF can0,080:7FF
 ```
 
 What healthy bring-up looks like:
 
 - `0x080` SYNC frames arrive at the configured cycle (1 ms for the PHU profile).
-- `0x201` carries a coherent image: the controlword bytes walk `06 00 -> 07 00
-  -> 0F 00` while the modes byte stays `08` (CSP) and target velocity stays `0`.
-  A controlword that changes while the modes byte drops to `00` is the
-  shared-PDO clobbering bug.
+- `0x201` is a 6-byte frame: controlword (bytes 0-1) walking `06 00 -> 07 00 ->
+  0F 00`, followed by the 4-byte target position (bytes 2-5) tracking the
+  measured position during bring-up, then frozen.
 - `0x181` statusword tracks the transitions (`31 06` ready to switch on ->
   `33 06` switched on -> `37 06` operation enabled), error code stays `0`.
 
-The drive accepts SDO writes to command/PDO objects only while pre-operational.
-The same write that the master issues from `OnConfig` before NMT start aborts
-with `0x00000002` once the node is operational, which is why runtime command
-objects go over PDO:
+The drive accepts SDO writes to **PDO communication/mapping** objects only while
+pre-operational (this is what `OnConfig` relies on). The DS402 **command**
+objects (`0x6040`, `0x6060`, `0x607A`, ...) are PDO-only and abort with
+`0x00000002` in any state, which is why they go over PDO:
 
 ```bash
-# SDO download 0x6060 = 8; succeeds (581 ... 60) pre-op, aborts (581 ... 80) once
-# the node is operational
+# SDO download 0x6060 = 8; aborts (581 ... 80) with abort code 0x00000002
+# regardless of NMT state -- command objects are PDO-only on this firmware
 cansend can0 601#2F60600008
 candump -tz can0,581:7FF
 ```

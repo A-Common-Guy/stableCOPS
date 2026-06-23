@@ -1,7 +1,7 @@
 {
-  "name": "eyou_phu",
-  "vendor_eds": "eds/EDS files/EYOU_ServoModule\uff08PHU\uff09.eds",
-  "normalized_eds": "generated/canopen/eyou_phu/eyou_phu.normalized.eds",
+  "name": "euservo_rp",
+  "vendor_eds": "eds/EDS files/EuServo_RP_EDS_\uff08RP\uff09V1.4.eds",
+  "normalized_eds": "generated/canopen/euservo_rp/euservo_rp.normalized.eds",
   "master_dcf": "dcf/master.dcf",
   "node_id": 1,
   "master_node_id": 127,

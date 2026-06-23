@@ -1,7 +1,7 @@
-name: eyou_phu
-description: EYou PHU servo module using the vendor-default PDO layout
+name: euservo_rp
+description: Yiyou EuServo RP servo module (RP EDS V1.4), CSP-minimal PDO layout
 
-vendor_eds: eds/EDS files/EYOU_ServoModule（PHU）.eds
+vendor_eds: eds/EDS files/EuServo_RP_EDS_（RP）V1.4.eds
 
 master:
   node_id: 127
@@ -17,14 +17,14 @@ master:
   boot_time: 5000
 
 node:
-  name: phu_joint
+  name: rp_joint
   node_id: 1
   mandatory: true
   boot: true
   reset_communication: true
 
 generation:
-  generated_dir: generated/canopen/eyou_phu
+  generated_dir: generated/canopen/euservo_rp
   dcf_dir: dcf
   no_strict: true
 
@@ -32,14 +32,13 @@ identity_policy: ignore
 pdo_policy: csp-minimal
 mode_policy: vendor-default
 
-# The EYou firmware ignores the EDS-default RxPDO1 (controlword + target velocity
-# + modes) during CSP bring-up: it will not leave "ready to switch on" even with
-# a correct controlword on the wire. The vendor's proven CSP recipe (manual
-# Table 5-5 / 3.6.1) uses RxPDO1 = controlword + target position and keeps the
-# mode object out of the cyclic stream. These overrides bend the generated master
-# (and the summary) to that layout; RPDO2/RPDO3 are disabled because CSP only
-# needs the target position, which now rides in RPDO1. TPDO feedback is left at
-# the vendor default so statusword/mode/position/velocity/torque stay available.
+# The RP EDS ships the same vendor-default RxPDO1 (controlword + target velocity
+# + modes) as the EYou PHU module. The proven CSP recipe (manual Table 5-5 /
+# 3.6.1) uses RxPDO1 = controlword + target position and keeps the mode object
+# out of the cyclic stream, so we apply the same overrides here. RPDO2/RPDO3 are
+# disabled because CSP only needs the target position, which now rides in RPDO1.
+# TPDO feedback is left at the vendor default so statusword/mode/position/
+# velocity/torque stay available. This matches kPdoSetup in MotorDriver.cpp.
 eds_overrides:
   # RxPDO1 mapping -> controlword (0x6040:00,16) + target position (0x607A:00,32)
   "1600sub0": { DefaultValue: "2" }
