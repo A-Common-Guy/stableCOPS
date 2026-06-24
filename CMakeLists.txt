@@ -72,3 +72,27 @@ set_target_properties(enable_and_hold PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
 )
 target_link_libraries(enable_and_hold PRIVATE stablecops_runtime)
+
+add_executable(csp_position
+    examples/csp_position.cpp
+)
+set_target_properties(csp_position PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
+)
+target_link_libraries(csp_position PRIVATE stablecops_runtime)
+
+add_executable(csv_velocity
+    examples/csv_velocity.cpp
+)
+set_target_properties(csv_velocity PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
+)
+target_link_libraries(csv_velocity PRIVATE stablecops_runtime)
+
+add_executable(cst_torque
+    examples/cst_torque.cpp
+)
+set_target_properties(cst_torque PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
+)
+target_link_libraries(cst_torque PRIVATE stablecops_runtime)
