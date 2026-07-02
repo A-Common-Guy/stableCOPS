@@ -231,21 +231,26 @@ def extract_pdo_mappings(
                     entries.append(decoded)
 
             cob_id = None
+            cob_id_offset = None
             transmission_type = None
             if comm:
                 cob_id = sections.get(f"{comm_section}sub1", {}).get("DefaultValue")
                 transmission_type = sections.get(f"{comm_section}sub2", {}).get("DefaultValue")
+                if cob_id and "$NODEID" in cob_id:
+                    cob_id_offset = parse_int_expr(cob_id, 0)
 
-            result[direction].append(
-                {
-                    "pdo": pdo_index + 1,
-                    "communication_index": f"0x{comm_base + pdo_index:04X}",
-                    "mapping_index": f"0x{map_base + pdo_index:04X}",
-                    "cob_id": parse_int_expr(cob_id, node_id) if cob_id else None,
-                    "transmission_type": parse_int_expr(transmission_type) if transmission_type else None,
-                    "entries": entries,
-                }
-            )
+            channel = {
+                "pdo": pdo_index + 1,
+                "communication_index": f"0x{comm_base + pdo_index:04X}",
+                "mapping_index": f"0x{map_base + pdo_index:04X}",
+                "cob_id": parse_int_expr(cob_id, node_id) if cob_id else None,
+                "transmission_type": parse_int_expr(transmission_type) if transmission_type else None,
+                "entries": entries,
+            }
+            if cob_id_offset is not None:
+                channel["cob_id_node_relative"] = True
+                channel["cob_id_offset"] = cob_id_offset
+            result[direction].append(channel)
 
     return result
 

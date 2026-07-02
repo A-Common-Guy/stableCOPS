@@ -30,8 +30,8 @@ uint32_t mappingEntryWord(const config::PdoMappedObject& object) {
 constexpr uint32_t kCobIdValidMask = 0x80000000u;
 
 // Objects whose CANopen type is signed. Everything else PDO-mappable here
-// (controlword, statusword, error code, profile/torque limits, MIT params) is
-// unsigned. Used together with the mapped bit length to pick the wire type.
+// (controlword, statusword, error code, profile/torque limits) is unsigned. Used
+// together with the mapped bit length to pick the wire type.
 bool isSignedObject(uint16_t index) {
     switch (index) {
         case ds402::od::modes_of_operation:
@@ -521,7 +521,8 @@ std::error_code MotorDriver::configureProfileParameters() noexcept {
 }
 
 std::error_code MotorDriver::configurePdos() noexcept {
-    std::cout << "configuring drive PDOs for cyclic synchronous operation\n";
+    std::cout << "node " << static_cast<int>(id())
+              << ": configuring drive PDOs for cyclic synchronous operation\n";
 
     std::error_code ec;
     const auto download = [&](uint16_t index, uint8_t subindex, auto value,
@@ -578,7 +579,8 @@ std::error_code MotorDriver::configurePdos() noexcept {
         if (!download(pdo.comm_index, 0x01, base_cob_id, "PDO COB-ID (enable)")) {
             return false;
         }
-        std::cout << "  " << role << " 0x" << std::hex << pdo.comm_index << std::dec
+        std::cout << "node " << static_cast<int>(id()) << ": " << role << " 0x" << std::hex
+                  << pdo.comm_index << std::dec
                   << " COB-ID 0x" << std::hex << base_cob_id << std::dec
                   << " set to transmission type " << static_cast<int>(pdo.transmission_type) << ", "
                   << pdo.entries.size() << " mapped objects\n";
@@ -600,7 +602,8 @@ std::error_code MotorDriver::configurePdos() noexcept {
                           "PDO COB-ID (disable)")) {
                 return ec;
             }
-            std::cout << "  RxPDO 0x" << std::hex << pdo.comm_index << std::dec
+            std::cout << "node " << static_cast<int>(id()) << ": RxPDO 0x" << std::hex
+                      << pdo.comm_index << std::dec
                       << " disabled (unused)\n";
         }
     }

@@ -75,7 +75,7 @@ typed object reads/writes, CiA402 enable/stop/fault-reset, setpoints, and encode
 feedback:
 
 ```bash
-build/stablecops_commissiond --can can0 --dcf dcf/master.dcf --node 1 --mode csp
+build/stablecops_commissiond --can can0 --dcf dcf/master.dcf --nodes 1,2 --mode csp
 # open http://127.0.0.1:8765/
 ```
 
@@ -84,7 +84,9 @@ mode. On the EYou RP firmware, controlword and target objects are driven through
 the PDO/CiA402 path once mapped, so use the UI motion buttons for movement and
 the object panel for parameters or diagnostics. The UI has a separate **Send
 Mode (0x6060)** action; use it before enabling or before sending the first
-setpoint, then confirm the displayed mode in the status panel.
+setpoint, then confirm the displayed mode in the status panel. When several
+nodes are passed, the daemon boots them on one shared bus/SYNC and the browser's
+target-node selector chooses which drive receives commands.
 
 Enable and hold the current CSP position:
 

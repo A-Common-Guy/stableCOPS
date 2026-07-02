@@ -18,13 +18,6 @@ struct Feedback {
     uint16_t error_code{0};
 };
 
-struct MitCommandRaw {
-    uint32_t parameter_0{0};
-    uint32_t parameter_1{0};
-    uint32_t parameter_2{0};
-    uint32_t parameter_3{0};
-};
-
 class DriveController {
 public:
     explicit DriveController(ObjectAccess& object_access);
@@ -61,7 +54,6 @@ public:
     void setCspTargetPosition(int32_t target_position);
     void setCsvTargetVelocity(int32_t target_velocity);
     void setCstTargetTorque(int16_t target_torque);
-    void setMitCommandRaw(const MitCommandRaw& command);
     void setCurrentPositionAsZero();
 
 private:

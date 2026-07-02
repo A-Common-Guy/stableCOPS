@@ -66,6 +66,14 @@ PdoChannel parseChannel(const json& channel) {
     return result;
 }
 
+PdoChannel parseChannelForNode(const json& channel, uint8_t node_id) {
+    PdoChannel result = parseChannel(channel);
+    if (channel.value("cob_id_node_relative", false) && channel.contains("cob_id_offset")) {
+        result.cob_id = parseUnsigned(channel.at("cob_id_offset")) + node_id;
+    }
+    return result;
+}
+
 std::vector<PdoChannel> parseChannels(const json& mappings, const char* key) {
     std::vector<PdoChannel> channels;
     if (!mappings.contains(key)) {
@@ -75,6 +83,31 @@ std::vector<PdoChannel> parseChannels(const json& mappings, const char* key) {
         channels.push_back(parseChannel(channel));
     }
     return channels;
+}
+
+std::vector<PdoChannel> parseChannelsForNode(const json& mappings, const char* key, uint8_t node_id) {
+    std::vector<PdoChannel> channels;
+    if (!mappings.contains(key)) {
+        return channels;
+    }
+    for (const auto& channel : mappings.at(key)) {
+        channels.push_back(parseChannelForNode(channel, node_id));
+    }
+    return channels;
+}
+
+bool hasNodeRelativeCobIdMetadata(const json& mappings) {
+    for (const char* key : {"rpdo", "tpdo"}) {
+        if (!mappings.contains(key)) {
+            continue;
+        }
+        for (const auto& channel : mappings.at(key)) {
+            if (channel.value("cob_id_node_relative", false)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 uint8_t parseRepresentativeNodeId(const json& document) {
@@ -167,9 +200,14 @@ PdoMap loadPdoMapFromSummary(const std::string& summary_path, uint8_t node_id) {
     const auto representative_node_id = parseRepresentativeNodeId(document);
     const auto& mappings = document.at("pdo_mappings");
     PdoMap map;
-    map.rpdo = parseChannels(mappings, "rpdo");
-    map.tpdo = parseChannels(mappings, "tpdo");
-    rebaseNodeRelativeCobIds(map, CobIdRebase{representative_node_id, node_id});
+    if (hasNodeRelativeCobIdMetadata(mappings)) {
+        map.rpdo = parseChannelsForNode(mappings, "rpdo", node_id);
+        map.tpdo = parseChannelsForNode(mappings, "tpdo", node_id);
+    } else {
+        map.rpdo = parseChannels(mappings, "rpdo");
+        map.tpdo = parseChannels(mappings, "tpdo");
+        rebaseNodeRelativeCobIds(map, CobIdRebase{representative_node_id, node_id});
+    }
     return map;
 }
 

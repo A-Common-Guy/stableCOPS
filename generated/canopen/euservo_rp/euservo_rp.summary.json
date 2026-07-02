@@ -33,7 +33,9 @@
             "bit_length": 32,
             "name": "Target position"
           }
-        ]
+        ],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 512
       },
       {
         "pdo": 2,
@@ -54,7 +56,9 @@
             "bit_length": 16,
             "name": "Target torque value"
           }
-        ]
+        ],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 768
       },
       {
         "pdo": 3,
@@ -62,7 +66,9 @@
         "mapping_index": "0x1602",
         "cob_id": 2147484673,
         "transmission_type": 1,
-        "entries": []
+        "entries": [],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 2147484672
       },
       {
         "pdo": 4,
@@ -70,7 +76,9 @@
         "mapping_index": "0x1603",
         "cob_id": 2147484929,
         "transmission_type": 255,
-        "entries": []
+        "entries": [],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 2147484928
       }
     ],
     "tpdo": [
@@ -99,7 +107,9 @@
             "bit_length": 16,
             "name": "Torque actual value"
           }
-        ]
+        ],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 1073742208
       },
       {
         "pdo": 2,
@@ -120,7 +130,9 @@
             "bit_length": 32,
             "name": "Velocity actual value"
           }
-        ]
+        ],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 1073742464
       },
       {
         "pdo": 3,
@@ -128,7 +140,9 @@
         "mapping_index": "0x1A02",
         "cob_id": 3221226369,
         "transmission_type": 255,
-        "entries": []
+        "entries": [],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 3221226368
       },
       {
         "pdo": 4,
@@ -136,7 +150,9 @@
         "mapping_index": "0x1A03",
         "cob_id": 3221226625,
         "transmission_type": 255,
-        "entries": []
+        "entries": [],
+        "cob_id_node_relative": true,
+        "cob_id_offset": 3221226624
       }
     ]
   }

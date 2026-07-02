@@ -16,11 +16,13 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "nlohmann/json.hpp"
 #include "stablecops/app/MotorConfig.hpp"
@@ -87,6 +89,30 @@ uint64_t parseUnsignedText(const std::string& text, uint64_t max_value) {
     return value;
 }
 
+std::optional<std::vector<uint8_t>> parseNodeList(const std::string& spec) {
+    std::vector<uint8_t> nodes;
+    std::stringstream stream(spec);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+        try {
+            const auto value = parseUnsignedText(token, 127);
+            if (value == 0) {
+                return std::nullopt;
+            }
+            nodes.push_back(static_cast<uint8_t>(value));
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+    if (nodes.empty()) {
+        return std::nullopt;
+    }
+    return nodes;
+}
+
 int64_t parseSignedText(const std::string& text) {
     std::size_t consumed = 0;
     const auto value = std::stoll(text, &consumed, 0);
@@ -114,6 +140,24 @@ uint8_t parseSubindex(const json& body) {
         return static_cast<uint8_t>(parseUnsignedText(body["subindex"].get<std::string>(), 0xFF));
     }
     return static_cast<uint8_t>(body.at("subindex").get<uint32_t>());
+}
+
+std::optional<uint8_t> parseNodeId(const json& body) {
+    if (!body.contains("node")) {
+        return std::nullopt;
+    }
+    if (body["node"].is_string()) {
+        const auto value = parseUnsignedText(body["node"].get<std::string>(), 127);
+        if (value == 0) {
+            throw std::invalid_argument("node id must be in range 1..127");
+        }
+        return static_cast<uint8_t>(value);
+    }
+    const auto value = body.at("node").get<uint32_t>();
+    if (value == 0 || value > 127) {
+        throw std::invalid_argument("node id must be in range 1..127");
+    }
+    return static_cast<uint8_t>(value);
 }
 
 int64_t parseBodyValue(const json& body) {
@@ -507,6 +551,7 @@ const char* indexHtml() {
   <div class="grid">
     <section class="card">
       <h2>Drive Status</h2>
+      <div class="row"><label>Target node</label><select id="node"></select></div>
       <div id="status" class="status"></div>
       <div class="actions">
         <button onclick="post('/api/enable', {hold:true})">Enable + Hold</button>
@@ -543,6 +588,7 @@ const char* indexHtml() {
   </div>
   <script>
     let objects = [];
+    let nodes = [];
     const $ = id => document.getElementById(id);
     async function api(path, options = {}) {
       const response = await fetch(path, options);
@@ -553,6 +599,7 @@ const char* indexHtml() {
     }
     async function post(path, body) {
       try {
+        body = {node: selectedNode(), ...body};
         const data = await api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
         log(data);
         await refresh();
@@ -580,18 +627,31 @@ const char* indexHtml() {
     function metric(label, value, cls = '') {
       return `<div class="metric"><span>${label}</span><strong class="${cls}">${value}</strong></div>`;
     }
+    function selectedNode() {
+      return Number($('node').value || (nodes[0] && nodes[0].node_id) || 1);
+    }
+    function updateNodeSelect(nextNodes) {
+      const previous = String(selectedNode());
+      nodes = nextNodes || [];
+      const options = nodes.map(n => `<option value="${n.node_id}">Node ${n.node_id}${n.feedback_live ? ' [live]' : ' [stale]'}</option>`).join('');
+      if ($('node').innerHTML !== options) $('node').innerHTML = options;
+      if (nodes.some(n => String(n.node_id) === previous)) $('node').value = previous;
+    }
     async function refresh() {
       try {
         const s = await api('/api/status');
+        updateNodeSelect(s.nodes);
+        const node = s.nodes.find(n => n.node_id === selectedNode()) || s.nodes[0];
+        if (!node) throw new Error('no nodes configured');
         $('status').innerHTML = [
-          metric('Feedback', s.feedback_live ? 'live' : 'stale', s.feedback_live ? 'ok' : 'bad'),
-          metric('CiA402', s.enabled ? 'operation enabled' : s.feedback.state, s.enabled ? 'ok' : ''),
-          metric('Mode', s.feedback.mode),
-          metric('Position', `${s.feedback.position} counts`),
-          metric('Angle', `${s.feedback.position_degrees.toFixed(3)} deg`),
-          metric('Velocity', s.feedback.velocity),
-          metric('Torque', s.feedback.torque),
-          metric('Error', s.feedback.error_code_hex, s.faulted ? 'bad' : 'ok')
+          metric('Feedback', node.feedback_live ? 'live' : 'stale', node.feedback_live ? 'ok' : 'bad'),
+          metric('CiA402', node.enabled ? 'operation enabled' : node.feedback.state, node.enabled ? 'ok' : ''),
+          metric('Mode', node.feedback.mode),
+          metric('Position', `${node.feedback.position} counts`),
+          metric('Angle', `${node.feedback.position_degrees.toFixed(3)} deg`),
+          metric('Velocity', node.feedback.velocity),
+          metric('Torque', node.feedback.torque),
+          metric('Error', node.feedback.error_code_hex, node.faulted ? 'bad' : 'ok')
         ].join('');
       } catch (error) {
         $('status').innerHTML = metric('Server', error.message, 'bad');
@@ -617,10 +677,11 @@ const char* indexHtml() {
 </html>)HTML";
 }
 
-json feedbackJson(stablecops::app::MotorDrive& drive) {
+json feedbackJson(uint8_t node_id, stablecops::app::MotorDrive& drive) {
     const auto feedback = drive.feedback();
     const auto stats = drive.cyclicStats();
     return {
+        {"node_id", node_id},
         {"running", drive.running()},
         {"feedback_live", drive.feedbackLive()},
         {"enabled", drive.enabled()},
@@ -645,6 +706,16 @@ json feedbackJson(stablecops::app::MotorDrive& drive) {
           {"mean_us", stats.mean_us},
           {"max_jitter_us", stats.max_jitter_us}}},
     };
+}
+
+using DriveMap = std::map<uint8_t, stablecops::app::MotorDrive*>;
+
+json allFeedbackJson(const DriveMap& drives) {
+    json nodes = json::array();
+    for (const auto& [node_id, drive] : drives) {
+        nodes.push_back(feedbackJson(node_id, *drive));
+    }
+    return {{"ok", true}, {"nodes", nodes}};
 }
 
 int32_t checkedI32(int64_t value, const char* field) {
@@ -672,8 +743,12 @@ void checkPositionStep(int64_t current, int64_t target, int32_t max_step) {
 
 class CommissioningApi {
 public:
-    CommissioningApi(stablecops::app::MotorDrive& drive, int32_t max_position_step)
-        : drive_(drive), max_position_step_(max_position_step) {}
+    CommissioningApi(DriveMap drives, int32_t max_position_step)
+        : drives_(std::move(drives)), max_position_step_(max_position_step) {
+        if (drives_.empty()) {
+            throw std::invalid_argument("CommissioningApi requires at least one drive");
+        }
+    }
 
     HttpResponse operator()(const HttpRequest& request) {
         try {
@@ -681,7 +756,7 @@ public:
                 return {200, "text/html; charset=utf-8", indexHtml()};
             }
             if (request.method == "GET" && request.path == "/api/status") {
-                return jsonResponse(feedbackJson(drive_));
+                return jsonResponse(allFeedbackJson(drives_));
             }
             if (request.method == "GET" && request.path == "/api/objects") {
                 return jsonResponse({{"ok", true}, {"objects", commonObjects()}});
@@ -691,17 +766,20 @@ public:
             }
 
             const json body = request.body.empty() ? json::object() : json::parse(request.body);
+            auto& drive = targetDrive(body);
             if (request.path == "/api/enable") {
-                drive_.enableOperation(body.value("hold", true));
-                return jsonResponse({{"ok", true}, {"action", "enable"}});
+                drive.enableOperation(body.value("hold", true));
+                return jsonResponse(
+                    {{"ok", true}, {"node", targetNode(body)}, {"action", "enable"}});
             }
             if (request.path == "/api/stop") {
-                drive_.stop();
-                return jsonResponse({{"ok", true}, {"action", "stop"}});
+                drive.stop();
+                return jsonResponse({{"ok", true}, {"node", targetNode(body)}, {"action", "stop"}});
             }
             if (request.path == "/api/fault-reset") {
-                drive_.resetFault();
-                return jsonResponse({{"ok", true}, {"action", "fault-reset"}});
+                drive.resetFault();
+                return jsonResponse(
+                    {{"ok", true}, {"node", targetNode(body)}, {"action", "fault-reset"}});
             }
             if (request.path == "/api/mode") {
                 if (!body.contains("mode") || !body["mode"].is_string()) {
@@ -712,8 +790,9 @@ public:
                 if (!mode) {
                     return errorResponse(400, "unknown mode: " + mode_name);
                 }
-                drive_.setOperationMode(*mode);
+                drive.setOperationMode(*mode);
                 return jsonResponse({{"ok", true},
+                                     {"node", targetNode(body)},
                                      {"action", "mode"},
                                      {"mode", mode_name},
                                      {"mode_text", stablecops::ds402::toString(*mode)}});
@@ -722,8 +801,9 @@ public:
                 const auto index = parseIndex(body);
                 const auto subindex = parseSubindex(body);
                 const auto type = parseObjectType(body);
-                const auto value = drive_.readObject(index, subindex, type);
+                const auto value = drive.readObject(index, subindex, type);
                 return jsonResponse({{"ok", true},
+                                     {"node", targetNode(body)},
                                      {"index", hexValue(index, 4)},
                                      {"subindex", subindex},
                                      {"type", objectTypeName(type)},
@@ -735,8 +815,9 @@ public:
                 const auto subindex = parseSubindex(body);
                 const auto type = parseObjectType(body);
                 const auto value = parseBodyValue(body);
-                drive_.writeObject(index, subindex, type, value);
+                drive.writeObject(index, subindex, type, value);
                 return jsonResponse({{"ok", true},
+                                     {"node", targetNode(body)},
                                      {"index", hexValue(index, 4)},
                                      {"subindex", subindex},
                                      {"type", objectTypeName(type)},
@@ -755,36 +836,59 @@ public:
     }
 
 private:
+    uint8_t targetNode(const json& body) const {
+        if (const auto requested = parseNodeId(body)) {
+            if (drives_.find(*requested) == drives_.end()) {
+                throw std::invalid_argument("node is not configured in this daemon");
+            }
+            return *requested;
+        }
+        return drives_.begin()->first;
+    }
+
+    stablecops::app::MotorDrive& targetDrive(const json& body) const {
+        const auto node_id = targetNode(body);
+        return *drives_.at(node_id);
+    }
+
     HttpResponse move(const json& body) {
+        auto& drive = targetDrive(body);
+        const auto node_id = targetNode(body);
         const auto type = lower(body.value("type", "csp"));
         const auto value = parseBodyValue(body);
         const bool relative = body.value("relative", false);
         if (type == "csp") {
-            const auto feedback = drive_.feedback();
+            const auto feedback = drive.feedback();
             const int64_t target =
                 relative ? static_cast<int64_t>(feedback.position) + value : value;
             checkPositionStep(feedback.position, target, max_position_step_);
-            drive_.commandPosition(checkedI32(target, "target"));
-            return jsonResponse(
-                {{"ok", true}, {"action", relative ? "csp-relative" : "csp"}, {"target", target}});
+            drive.commandPosition(checkedI32(target, "target"));
+            return jsonResponse({{"ok", true},
+                                 {"node", node_id},
+                                 {"action", relative ? "csp-relative" : "csp"},
+                                 {"target", target}});
         }
         if (type == "pp") {
-            drive_.moveToPosition(checkedI32(value, "target"), relative);
-            return jsonResponse(
-                {{"ok", true}, {"action", relative ? "pp-relative" : "pp"}, {"target", value}});
+            drive.moveToPosition(checkedI32(value, "target"), relative);
+            return jsonResponse({{"ok", true},
+                                 {"node", node_id},
+                                 {"action", relative ? "pp-relative" : "pp"},
+                                 {"target", value}});
         }
         if (type == "velocity") {
-            drive_.commandVelocity(checkedI32(value, "velocity"));
-            return jsonResponse({{"ok", true}, {"action", "velocity"}, {"target", value}});
+            drive.commandVelocity(checkedI32(value, "velocity"));
+            return jsonResponse(
+                {{"ok", true}, {"node", node_id}, {"action", "velocity"}, {"target", value}});
         }
         if (type == "torque") {
-            drive_.commandTorque(checkedI16(value, "torque"));
-            return jsonResponse({{"ok", true}, {"action", "torque"}, {"target", value}});
+            drive.commandTorque(checkedI16(value, "torque"));
+            return jsonResponse(
+                {{"ok", true}, {"node", node_id}, {"action", "torque"}, {"target", value}});
         }
         return errorResponse(400, "unknown move type: " + type);
     }
 
-    stablecops::app::MotorDrive& drive_;
+    DriveMap drives_;
     int32_t max_position_step_;
 };
 
@@ -794,6 +898,7 @@ int main(int argc, char** argv) {
     stablecops::app::MotorConfig config;
     config.monitor_on_boot = true;
     config.operation_mode = stablecops::ds402::OperationMode::CyclicSynchronousPosition;
+    std::vector<uint8_t> node_ids;
 
     std::string host{"127.0.0.1"};
     uint16_t port = 8765;
@@ -802,7 +907,8 @@ int main(int argc, char** argv) {
         std::cerr << "usage: stablecops_commissiond [--host 127.0.0.1] [--port 8765] "
                      "[--can can0] [--dcf dcf/master.dcf] "
                      "[--summary generated/.../<name>.summary.json] "
-                     "[--master-node 127] [--node 1] [--mode csp|csv|cst|pp|pv|pt] "
+                     "[--master-node 127] [--node 1] [--nodes 1,2,3] "
+                     "[--mode csp|csv|cst|pp|pv|pt] "
                      "[--profile-velocity n] [--profile-accel n] [--profile-decel n] "
                      "[--torque-slope n] [--max-position-step counts] "
                      "[--feedback-timeout ms] [--counts-per-rev n] "
@@ -827,6 +933,13 @@ int main(int argc, char** argv) {
                 config.master_node_id = static_cast<uint8_t>(parseUnsignedText(argv[++i], 127));
             } else if (arg == "--node" && i + 1 < argc) {
                 config.node_id = static_cast<uint8_t>(parseUnsignedText(argv[++i], 127));
+            } else if (arg == "--nodes" && i + 1 < argc) {
+                auto parsed = parseNodeList(argv[++i]);
+                if (!parsed) {
+                    print_usage();
+                    return EXIT_FAILURE;
+                }
+                node_ids = *parsed;
             } else if (arg == "--mode" && i + 1 < argc) {
                 const auto mode = parseOperationMode(argv[++i]);
                 if (!mode) {
@@ -872,18 +985,34 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, handleSignal);
         std::signal(SIGTERM, handleSignal);
 
+        if (node_ids.empty()) {
+            node_ids.push_back(config.node_id);
+        }
+
         std::cout << "stableCOPS commissioning daemon\n"
                   << "CAN interface: " << config.can_interface << '\n'
-                  << "Node ID: " << static_cast<int>(config.node_id) << '\n'
+                  << "Node IDs: ";
+        for (std::size_t i = 0; i < node_ids.size(); ++i) {
+            std::cout << static_cast<int>(node_ids[i]) << (i + 1 < node_ids.size() ? "," : "");
+        }
+        std::cout << '\n'
                   << "Mode at boot: " << stablecops::ds402::toString(*config.operation_mode) << '\n'
                   << "Monitor on boot: yes\n"
                   << "Master DCF: " << config.master_dcf_path << '\n'
                   << "PDO summary: " << config.summary_path << '\n';
 
-        stablecops::app::MotorDrive drive(config);
-        drive.start();
+        std::vector<std::unique_ptr<stablecops::app::MotorDrive>> drives;
+        DriveMap drive_map;
+        for (uint8_t node_id : node_ids) {
+            stablecops::app::MotorConfig node_config = config;
+            node_config.node_id = node_id;
+            auto drive = std::make_unique<stablecops::app::MotorDrive>(node_config);
+            drive_map[node_id] = drive.get();
+            drives.push_back(std::move(drive));
+        }
+        drives.front()->start();
 
-        CommissioningApi api(drive, config.max_position_step);
+        CommissioningApi api(drive_map, config.max_position_step);
         HttpServer server(host, port, api);
         server.run();
         return EXIT_SUCCESS;

@@ -77,8 +77,6 @@ std::string toString(OperationMode mode) {
             return "cyclic synchronous velocity";
         case OperationMode::CyclicSynchronousTorque:
             return "cyclic synchronous torque";
-        case OperationMode::Mit:
-            return "MIT";
     }
     return "unknown";
 }

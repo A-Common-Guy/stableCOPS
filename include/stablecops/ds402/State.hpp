@@ -24,7 +24,6 @@ enum class OperationMode : int8_t {
     CyclicSynchronousPosition = 8,
     CyclicSynchronousVelocity = 9,
     CyclicSynchronousTorque = 10,
-    Mit = 11,
 };
 
 namespace controlword {

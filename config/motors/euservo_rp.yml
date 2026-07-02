@@ -16,19 +16,11 @@ master:
   stop_all_nodes: false
   boot_time: 5000
 
-node:
-  name: rp_joint
-  node_id: 1
-  mandatory: true
-  boot: true
-  reset_communication: true
-
-# Multiple homogeneous joints on one chain: list them under `nodes:` instead of
-# the single `node:` above (the generator accepts either). All nodes share this
-# same EDS and PDO layout, differing only by node id; dcfgen builds the master's
-# image for every slave. Example:
+# Multiple homogeneous joints on one chain. All nodes share this same EDS and
+# PDO layout, differing only by node id; dcfgen builds the master's image for
+# every slave.
 nodes:
- - { name: rp_joint_1, node_id: 1 }
+ - { name: rp_joint_1, node_id: 1, mandatory: true, boot: true }
  - { name: rp_joint_2, node_id: 2, mandatory: false, boot: true }
 #   - { name: rp_joint_3, node_id: 3 }
 

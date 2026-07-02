@@ -21,11 +21,6 @@ constexpr uint16_t profile_deceleration = 0x6084;
 constexpr uint16_t torque_slope = 0x6087;
 constexpr uint16_t target_velocity = 0x60FF;
 
-constexpr uint16_t mit_parameter_0 = 0x2130;
-constexpr uint16_t mit_parameter_1 = 0x2131;
-constexpr uint16_t mit_parameter_2 = 0x2132;
-constexpr uint16_t mit_parameter_3 = 0x2133;
-
 constexpr uint16_t set_current_position_zero = 0x2262;
 
 constexpr uint8_t default_subindex = 0x00;

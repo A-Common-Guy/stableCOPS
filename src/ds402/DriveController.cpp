@@ -197,13 +197,6 @@ void DriveController::setCstTargetTorque(int16_t target_torque) {
         static_cast<uint16_t>(target_torque));
 }
 
-void DriveController::setMitCommandRaw(const MitCommandRaw& command) {
-    object_access_.writeU32(od::mit_parameter_0, od::default_subindex, command.parameter_0);
-    object_access_.writeU32(od::mit_parameter_1, od::default_subindex, command.parameter_1);
-    object_access_.writeU32(od::mit_parameter_2, od::default_subindex, command.parameter_2);
-    object_access_.writeU32(od::mit_parameter_3, od::default_subindex, command.parameter_3);
-}
-
 void DriveController::setCurrentPositionAsZero() {
     object_access_.writeU8(od::set_current_position_zero, od::default_subindex, 0x01);
 }
