@@ -18,6 +18,21 @@ struct Feedback {
     uint16_t error_code{0};
 };
 
+struct HomingConfig {
+    int32_t search_velocity{0};
+    int32_t approach_velocity{0};
+    int32_t max_travel{0};
+    int32_t home_offset{0};
+    int32_t threshold_torque{0};
+ };
+
+ struct HomingResult {
+    int32_t center_position{0};
+    int32_t upper_limit_position{0};
+    int32_t lower_limit_position{0};
+    bool success{false};
+ };
+
 class DriveController {
 public:
     explicit DriveController(ObjectAccess& object_access);
