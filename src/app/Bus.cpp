@@ -110,7 +110,11 @@ void Bus::start() {
         // that runs their tasks (required by Lely); destroy it here too.
         std::unique_ptr<CanopenApplication> app;
         try {
-            app = std::make_unique<CanopenApplication>(node_configs);
+            // The embedder (MotorDrive / tools built on it) owns process signals;
+            // disable the application's built-in SIGINT/SIGTERM handling so the
+            // two don't race for the first Ctrl-C.
+            app = std::make_unique<CanopenApplication>(node_configs,
+                                                       /*install_signal_handler=*/false);
         } catch (...) {
             running_.store(false);
             ready.set_exception(std::current_exception());

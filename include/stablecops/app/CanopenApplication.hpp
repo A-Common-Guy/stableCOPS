@@ -19,9 +19,18 @@ class CanopenApplication {
 public:
     // Multi-node: node_configs must be non-empty; node_configs.front() supplies
     // the bus-level settings, every entry contributes one drive.
-    explicit CanopenApplication(std::vector<MotorConfig> node_configs);
+    //
+    // install_signal_handler: when true (default), the application catches
+    // SIGINT/SIGTERM on its loop and runs a coordinated graceful shutdown - use
+    // this when the application owns the process (e.g. running run() on the main
+    // thread). Set it false when embedding behind the Bus/MotorDrive API, where
+    // the embedder owns process signals; otherwise the two handlers race for the
+    // first Ctrl-C.
+    explicit CanopenApplication(std::vector<MotorConfig> node_configs,
+                                bool install_signal_handler = true);
     // Single-node convenience.
-    explicit CanopenApplication(const MotorConfig& config);
+    explicit CanopenApplication(const MotorConfig& config,
+                                bool install_signal_handler = true);
     ~CanopenApplication();
 
     CanopenApplication(const CanopenApplication&) = delete;

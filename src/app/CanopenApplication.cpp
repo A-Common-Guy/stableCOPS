@@ -14,7 +14,7 @@
 
 #include <chrono>
 #include <csignal>
-#include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -61,7 +61,7 @@ std::vector<MotorConfig> requireNonEmpty(std::vector<MotorConfig> configs) {
 
 class CanopenApplication::Impl {
 public:
-    explicit Impl(std::vector<MotorConfig> node_configs)
+    explicit Impl(std::vector<MotorConfig> node_configs, bool install_signal_handler)
         : configs_(requireNonEmpty(std::move(node_configs))),
           io_guard_(),
           context_(),
@@ -73,8 +73,7 @@ public:
           timer_(poll_, executor_, CLOCK_MONOTONIC),
           shutdown_timer_(poll_, executor_, CLOCK_MONOTONIC),
           master_(timer_, channel_, configs_.front().master_dcf_path, "",
-                  configs_.front().master_node_id),
-          sigset_(poll_, executor_) {
+                  configs_.front().master_node_id) {
         channel_.open(controller_);
 
         for (const auto& config : configs_) {
@@ -91,13 +90,22 @@ public:
             motors_.push_back(std::move(motor));
         }
 
-        sigset_.insert(SIGINT);
-        sigset_.insert(SIGTERM);
-        armSignalWait();
+        // Only install the built-in SIGINT/SIGTERM handling when this
+        // application owns the process lifecycle (e.g. stablecops_master, which
+        // runs the loop on the main thread and has no handler of its own). When
+        // embedded behind the Bus/MotorDrive API the embedder owns signals, so
+        // installing it here would just steal the first Ctrl-C from them and
+        // require an extra press to actually shut down.
+        if (install_signal_handler) {
+            sigset_.emplace(poll_, executor_);
+            sigset_->insert(SIGINT);
+            sigset_->insert(SIGTERM);
+            armSignalWait();
+        }
     }
 
     void armSignalWait() {
-        sigset_.submit_wait(executor_, [this](int signo) {
+        sigset_->submit_wait(executor_, [this](int signo) {
             if (!shutdown_initiated_) {
                 stablecops::log::out() << "\nreceived signal " << signo
                           << "; disabling drives and shutting down...\n";
@@ -205,7 +213,9 @@ public:
     ::lely::io::Timer shutdown_timer_;
     ::lely::canopen::AsyncMaster master_;
     std::vector<std::unique_ptr<stablecops::lely::MotorDriver>> motors_;
-    ::lely::io::SignalSet sigset_;
+    // Engaged only when the application installs its own signal handling; empty
+    // when the embedder (Bus/MotorDrive) owns process signals.
+    std::optional<::lely::io::SignalSet> sigset_;
 
     bool shutdown_initiated_{false};
     bool shutdown_complete_{false};
@@ -213,11 +223,12 @@ public:
     std::chrono::steady_clock::time_point shutdown_deadline_{};
 };
 
-CanopenApplication::CanopenApplication(std::vector<MotorConfig> node_configs)
-    : impl_(std::make_unique<Impl>(std::move(node_configs))) {}
+CanopenApplication::CanopenApplication(std::vector<MotorConfig> node_configs,
+                                       bool install_signal_handler)
+    : impl_(std::make_unique<Impl>(std::move(node_configs), install_signal_handler)) {}
 
-CanopenApplication::CanopenApplication(const MotorConfig& config)
-    : CanopenApplication(wrapSingle(config)) {}
+CanopenApplication::CanopenApplication(const MotorConfig& config, bool install_signal_handler)
+    : CanopenApplication(wrapSingle(config), install_signal_handler) {}
 
 CanopenApplication::~CanopenApplication() = default;
 
