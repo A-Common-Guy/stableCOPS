@@ -19,10 +19,14 @@ struct Feedback {
 };
 
 struct HomingConfig {
-    int32_t search_velocity{2000};
-    int32_t approach_velocity{4000};
+    int32_t search_velocity{25000};
+    int32_t approach_velocity{24000};
+    int32_t center_velocity{24000};
+    int32_t center_final_velocity{4000};
+    int32_t center_slowdown_distance{1000};
     int32_t backoff_distance{2000};
     int32_t center_tolerance{50};
+    int32_t center_settle_tolerance{200};
     int32_t min_travel{1000};
     int32_t max_travel{2000000};
     int32_t home_offset{0};
@@ -50,6 +54,9 @@ enum class HomingPhase : uint8_t {
     MoveToCenter,
     WaitAtCenter,
     ZeroAtCenter,
+    RestoreDisable,
+    RestoreMode,
+    RestoreEnable,
     Done,
     Failed,
 };

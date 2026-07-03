@@ -87,6 +87,12 @@ std::string homingPhaseName(stablecops::ds402::HomingPhase phase) {
             return "wait-at-center";
         case HomingPhase::ZeroAtCenter:
             return "zero-at-center";
+        case HomingPhase::RestoreDisable:
+            return "restore-disable";
+        case HomingPhase::RestoreMode:
+            return "restore-mode";
+        case HomingPhase::RestoreEnable:
+            return "restore-enable";
         case HomingPhase::Done:
             return "done";
         case HomingPhase::Failed:
@@ -766,13 +772,16 @@ const char* indexHtml() {
     </section>
     <section class="card">
       <h2>Homing</h2>
-      <div class="row"><label>Search velocity</label><input id="homeSearchVelocity" value="2000"></div>
-      <div class="row"><label>Approach / center velocity</label><input id="homeApproachVelocity" value="500"></div>
-      <div class="row"><label>Torque threshold</label><input id="homeTorque" value="120"></div>
+      <div class="row"><label>Search velocity</label><input id="homeSearchVelocity" value="25000"></div>
+      <div class="row"><label>Backoff velocity</label><input id="homeApproachVelocity" value="24000"></div>
+      <div class="row"><label>Center velocity</label><input id="homeCenterVelocity" value="24000"></div>
+      <div class="row"><label>Final center velocity</label><input id="homeCenterFinalVelocity" value="4000"></div>
+      <div class="row"><label>Center slowdown distance</label><input id="homeCenterSlowdown" value="1000"></div>
+      <div class="row"><label>Torque threshold</label><input id="homeTorque" value="90"></div>
       <div class="row"><label>Backoff distance</label><input id="homeBackoff" value="2000"></div>
       <div class="row"><label>Save zero to NVM</label><select id="homeSaveNvm"><option value="true">yes</option><option value="false">no</option></select></div>
       <div class="actions"><button onclick="startHoming()">Start Homing</button></div>
-      <p class="note">Use the safe sequence first: Stop, wait for switch-on-disabled, Send Mode CSV, Enable, then Start Homing.</p>
+      <p class="note">Start Homing safely switches to CSV, runs the hardstop search, then restores the previous mode/state.</p>
     </section>
     <section class="card">
       <h2>Object Dictionary</h2>
@@ -836,6 +845,9 @@ const char* indexHtml() {
       await post('/api/home/start', {
         search_velocity: $('homeSearchVelocity').value,
         approach_velocity: $('homeApproachVelocity').value,
+        center_velocity: $('homeCenterVelocity').value,
+        center_final_velocity: $('homeCenterFinalVelocity').value,
+        center_slowdown_distance: $('homeCenterSlowdown').value,
         threshold_torque: $('homeTorque').value,
         backoff_distance: $('homeBackoff').value,
         save_zero_to_nvm: $('homeSaveNvm').value === 'true'
@@ -1016,12 +1028,30 @@ stablecops::ds402::HomingConfig parseHomingConfig(const json& body) {
     config.approach_velocity =
         checkedI32(optionalSigned(body, "approach_velocity", config.approach_velocity),
                    "approach_velocity");
+    config.center_velocity =
+        checkedI32(optionalSigned(body, "center_velocity", config.center_velocity),
+                   "center_velocity");
+    config.center_final_velocity =
+        checkedI32(optionalSigned(body,
+                                  "center_final_velocity",
+                                  config.center_final_velocity),
+                   "center_final_velocity");
+    config.center_slowdown_distance =
+        checkedI32(optionalSigned(body,
+                                  "center_slowdown_distance",
+                                  config.center_slowdown_distance),
+                   "center_slowdown_distance");
     config.backoff_distance =
         checkedI32(optionalSigned(body, "backoff_distance", config.backoff_distance),
                    "backoff_distance");
     config.center_tolerance =
         checkedI32(optionalSigned(body, "center_tolerance", config.center_tolerance),
                    "center_tolerance");
+    config.center_settle_tolerance =
+        checkedI32(optionalSigned(body,
+                                  "center_settle_tolerance",
+                                  config.center_settle_tolerance),
+                   "center_settle_tolerance");
     config.min_travel =
         checkedI32(optionalSigned(body, "min_travel", config.min_travel), "min_travel");
     config.max_travel =

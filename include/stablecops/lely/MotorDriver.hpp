@@ -118,7 +118,9 @@ public:
     ds402::Feedback feedbackSnapshot() const;
     bool feedbackLive() const;
 
-
+    // Runs hardstop-midpoint homing. The routine snapshots the current mode,
+    // switches safely through CSV for the search, then restores the previous
+    // mode and enabled state when complete.
     void requestHoming(const ds402::HomingConfig& config);
     ds402::HomingPhase homingPhase() const;
     ds402::HomingResult homingResult() const;
@@ -223,10 +225,12 @@ private:
     int32_t homing_start_position_{0};
     int32_t homing_backoff_target_{0};
     int32_t homing_center_target_{0};
+    ds402::OperationMode homing_restore_mode_{ds402::OperationMode::CyclicSynchronousPosition};
     std::chrono::steady_clock::time_point homing_deadline_{};
     std::chrono::steady_clock::time_point homing_contact_since_{};
     std::chrono::steady_clock::time_point homing_settle_until_{};
     bool homing_contact_active_{false};
+    bool homing_restore_enabled_{false};
 
     // Profile Position new-setpoint handshake, driven from OnSync so the
     // controlword edge is produced coherently in the cyclic stream.
