@@ -181,4 +181,26 @@ void MotorDrive::moveToPosition(int32_t counts, bool relative) {
     });
 }
 
+void MotorDrive::startHoming(const ds402::HomingConfig& config) {
+    bus_->invokeOnDriver(node_id_, [&config](stablecops::lely::MotorDriver& motor) {
+        motor.requestHoming(config);
+    });
+}
+
+ds402::HomingPhase MotorDrive::homingPhase() const {
+    ds402::HomingPhase phase = ds402::HomingPhase::Idle;
+    bus_->invokeOnDriver(node_id_, [&phase](stablecops::lely::MotorDriver& motor) {
+        phase = motor.homingPhase();
+    });
+    return phase;
+}
+
+ds402::HomingResult MotorDrive::homingResult() const {
+    ds402::HomingResult result;
+    bus_->invokeOnDriver(node_id_, [&result](stablecops::lely::MotorDriver& motor) {
+        result = motor.homingResult();
+    });
+    return result;
+}
+
 }  // namespace stablecops::app

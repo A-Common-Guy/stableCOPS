@@ -70,6 +70,31 @@ std::optional<stablecops::ds402::OperationMode> parseOperationMode(const std::st
     return std::nullopt;
 }
 
+std::string homingPhaseName(stablecops::ds402::HomingPhase phase) {
+    using stablecops::ds402::HomingPhase;
+    switch (phase) {
+        case HomingPhase::Idle:
+            return "idle";
+        case HomingPhase::SearchNegative:
+            return "search-negative";
+        case HomingPhase::BackoffNegative:
+            return "backoff-negative";
+        case HomingPhase::SearchPositive:
+            return "search-positive";
+        case HomingPhase::MoveToCenter:
+            return "move-to-center";
+        case HomingPhase::WaitAtCenter:
+            return "wait-at-center";
+        case HomingPhase::ZeroAtCenter:
+            return "zero-at-center";
+        case HomingPhase::Done:
+            return "done";
+        case HomingPhase::Failed:
+            return "failed";
+    }
+    return "unknown";
+}
+
 std::string trim(const std::string& value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
@@ -740,6 +765,16 @@ const char* indexHtml() {
       <p class="note">Send the operation mode before enabling or before the first setpoint. The drive can reject runtime mode writes depending on state; the daemon reports that SDO error instead of hiding it.</p>
     </section>
     <section class="card">
+      <h2>Homing</h2>
+      <div class="row"><label>Search velocity</label><input id="homeSearchVelocity" value="2000"></div>
+      <div class="row"><label>Approach / center velocity</label><input id="homeApproachVelocity" value="500"></div>
+      <div class="row"><label>Torque threshold</label><input id="homeTorque" value="120"></div>
+      <div class="row"><label>Backoff distance</label><input id="homeBackoff" value="2000"></div>
+      <div class="row"><label>Save zero to NVM</label><select id="homeSaveNvm"><option value="true">yes</option><option value="false">no</option></select></div>
+      <div class="actions"><button onclick="startHoming()">Start Homing</button></div>
+      <p class="note">Use the safe sequence first: Stop, wait for switch-on-disabled, Send Mode CSV, Enable, then Start Homing.</p>
+    </section>
+    <section class="card">
       <h2>Object Dictionary</h2>
       <div class="row"><label>Search register</label><input id="objectSearch" placeholder="6064, velocity, encoder..." oninput="renderObjectOptions()"></div>
       <div class="row"><label>Common object</label><select id="commonObjects" onchange="pickObject()"></select></div>
@@ -797,6 +832,15 @@ const char* indexHtml() {
       const body = {type: kind.replace('-relative', ''), value: $('moveValue').value, relative: kind.endsWith('-relative')};
       await post('/api/move', body);
     }
+    async function startHoming() {
+      await post('/api/home/start', {
+        search_velocity: $('homeSearchVelocity').value,
+        approach_velocity: $('homeApproachVelocity').value,
+        threshold_torque: $('homeTorque').value,
+        backoff_distance: $('homeBackoff').value,
+        save_zero_to_nvm: $('homeSaveNvm').value === 'true'
+      });
+    }
     function metric(label, value, cls = '') {
       return `<div class="metric"><span>${label}</span><strong class="${cls}">${value}</strong></div>`;
     }
@@ -824,6 +868,7 @@ const char* indexHtml() {
           metric('Angle', `${node.feedback.position_degrees.toFixed(3)} deg`),
           metric('Velocity', node.feedback.velocity),
           metric('Torque', node.feedback.torque),
+          metric('Homing', node.homing.phase, node.homing.result.success ? 'ok' : ''),
           metric('Error', node.feedback.error_code_hex, node.faulted ? 'bad' : 'ok')
         ].join('');
       } catch (error) {
@@ -864,6 +909,8 @@ const char* indexHtml() {
 json feedbackJson(uint8_t node_id, stablecops::app::MotorDrive& drive) {
     const auto feedback = drive.feedback();
     const auto stats = drive.cyclicStats();
+    const auto homing_phase = drive.homingPhase();
+    const auto homing_result = drive.homingResult();
     return {
         {"node_id", node_id},
         {"running", drive.running()},
@@ -889,6 +936,14 @@ json feedbackJson(uint8_t node_id, stablecops::app::MotorDrive& drive) {
           {"max_us", stats.max_us},
           {"mean_us", stats.mean_us},
           {"max_jitter_us", stats.max_jitter_us}}},
+        {"homing",
+         {{"phase", homingPhaseName(homing_phase)},
+          {"result",
+           {{"success", homing_result.success},
+            {"lower_limit_position", homing_result.lower_limit_position},
+            {"upper_limit_position", homing_result.upper_limit_position},
+            {"center_position", homing_result.center_position},
+            {"travel", homing_result.travel}}}}},
     };
 }
 
@@ -916,6 +971,75 @@ int16_t checkedI16(int64_t value, const char* field) {
         throw std::invalid_argument(std::string(field) + " is outside int16 range");
     }
     return static_cast<int16_t>(value);
+}
+
+int64_t optionalSigned(const json& body, const char* field, int64_t fallback) {
+    if (!body.contains(field)) {
+        return fallback;
+    }
+    if (body[field].is_string()) {
+        return parseSignedText(body[field].get<std::string>());
+    }
+    return body.at(field).get<int64_t>();
+}
+
+std::chrono::milliseconds optionalMilliseconds(const json& body,
+                                               const char* field,
+                                               std::chrono::milliseconds fallback) {
+    return std::chrono::milliseconds{optionalSigned(body, field, fallback.count())};
+}
+
+bool optionalBool(const json& body, const char* field, bool fallback) {
+    if (!body.contains(field)) {
+        return fallback;
+    }
+    if (body[field].is_boolean()) {
+        return body[field].get<bool>();
+    }
+    if (body[field].is_string()) {
+        const auto value = lower(body[field].get<std::string>());
+        if (value == "true" || value == "1" || value == "yes") {
+            return true;
+        }
+        if (value == "false" || value == "0" || value == "no") {
+            return false;
+        }
+    }
+    throw std::invalid_argument(std::string(field) + " must be a boolean");
+}
+
+stablecops::ds402::HomingConfig parseHomingConfig(const json& body) {
+    stablecops::ds402::HomingConfig config;
+    config.search_velocity =
+        checkedI32(optionalSigned(body, "search_velocity", config.search_velocity),
+                   "search_velocity");
+    config.approach_velocity =
+        checkedI32(optionalSigned(body, "approach_velocity", config.approach_velocity),
+                   "approach_velocity");
+    config.backoff_distance =
+        checkedI32(optionalSigned(body, "backoff_distance", config.backoff_distance),
+                   "backoff_distance");
+    config.center_tolerance =
+        checkedI32(optionalSigned(body, "center_tolerance", config.center_tolerance),
+                   "center_tolerance");
+    config.min_travel =
+        checkedI32(optionalSigned(body, "min_travel", config.min_travel), "min_travel");
+    config.max_travel =
+        checkedI32(optionalSigned(body, "max_travel", config.max_travel), "max_travel");
+    config.home_offset =
+        checkedI32(optionalSigned(body, "home_offset", config.home_offset), "home_offset");
+    config.threshold_torque =
+        checkedI16(optionalSigned(body, "threshold_torque", config.threshold_torque),
+                   "threshold_torque");
+    config.stopped_velocity =
+        checkedI32(optionalSigned(body, "stopped_velocity", config.stopped_velocity),
+                   "stopped_velocity");
+    config.contact_dwell = optionalMilliseconds(body, "contact_dwell_ms", config.contact_dwell);
+    config.settle_time = optionalMilliseconds(body, "settle_time_ms", config.settle_time);
+    config.timeout = optionalMilliseconds(body, "timeout_ms", config.timeout);
+    config.save_zero_to_nvm =
+        optionalBool(body, "save_zero_to_nvm", config.save_zero_to_nvm);
+    return config;
 }
 
 void checkPositionStep(int64_t current, int64_t target, int32_t max_step) {
@@ -1013,6 +1137,9 @@ public:
             if (request.path == "/api/move") {
                 return move(body);
             }
+            if (request.path == "/api/home/start") {
+                return startHoming(body);
+            }
             return errorResponse(404, "unknown endpoint");
         } catch (const json::exception& exception) {
             return errorResponse(400, exception.what());
@@ -1072,6 +1199,17 @@ private:
                 {{"ok", true}, {"node", node_id}, {"action", "torque"}, {"target", value}});
         }
         return errorResponse(400, "unknown move type: " + type);
+    }
+
+    HttpResponse startHoming(const json& body) {
+        auto& drive = targetDrive(body);
+        const auto node_id = targetNode(body);
+        const auto config = parseHomingConfig(body);
+        drive.startHoming(config);
+        return jsonResponse({{"ok", true},
+                             {"node", node_id},
+                             {"action", "home-start"},
+                             {"phase", homingPhaseName(drive.homingPhase())}});
     }
 
     DriveMap drives_;

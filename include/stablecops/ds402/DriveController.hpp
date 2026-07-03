@@ -19,19 +19,40 @@ struct Feedback {
 };
 
 struct HomingConfig {
-    int32_t search_velocity{0};
-    int32_t approach_velocity{0};
-    int32_t max_travel{0};
+    int32_t search_velocity{2000};
+    int32_t approach_velocity{4000};
+    int32_t backoff_distance{2000};
+    int32_t center_tolerance{50};
+    int32_t min_travel{1000};
+    int32_t max_travel{2000000};
     int32_t home_offset{0};
-    int32_t threshold_torque{0};
- };
+    int16_t threshold_torque{90};
+    int32_t stopped_velocity{200};
+    std::chrono::milliseconds contact_dwell{20};
+    std::chrono::milliseconds settle_time{200};
+    std::chrono::milliseconds timeout{30000};
+    bool save_zero_to_nvm{true};
+};
 
- struct HomingResult {
-    int32_t center_position{0};
-    int32_t upper_limit_position{0};
+struct HomingResult {
     int32_t lower_limit_position{0};
+    int32_t upper_limit_position{0};
+    int32_t center_position{0};
+    int32_t travel{0};
     bool success{false};
- };
+};
+
+enum class HomingPhase : uint8_t {
+    Idle,
+    SearchNegative,
+    BackoffNegative,
+    SearchPositive,
+    MoveToCenter,
+    WaitAtCenter,
+    ZeroAtCenter,
+    Done,
+    Failed,
+};
 
 class DriveController {
 public:
@@ -67,6 +88,8 @@ public:
     void setCsvTargetVelocity(int32_t target_velocity);
     void setCstTargetTorque(int16_t target_torque);
     void setCurrentPositionAsZero();
+    void storeApplicationParameters();
+    void stopCsvMotion();
 
 private:
     ObjectAccess& object_access_;

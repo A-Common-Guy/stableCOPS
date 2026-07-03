@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <vector>
 
@@ -117,6 +118,11 @@ public:
     ds402::Feedback feedbackSnapshot() const;
     bool feedbackLive() const;
 
+
+    void requestHoming(const ds402::HomingConfig& config);
+    ds402::HomingPhase homingPhase() const;
+    ds402::HomingResult homingResult() const;
+
     // Thread-safe snapshot of the measured cyclic cadence (interval min/max/mean
     // and worst-case jitter vs the nominal period). Published every OnSync.
     CyclicStats cyclicStats() const;
@@ -139,6 +145,11 @@ protected:
     void OnSync(uint8_t counter, const time_point& time) noexcept override;
 
 private:
+    void advanceHoming();
+    void failHoming(const std::string& reason);
+    bool homingContactDetected(int direction, std::chrono::steady_clock::time_point now);
+    bool homingTimedOut(std::chrono::steady_clock::time_point now) const;
+
     bool wantsMotionAction() const;
     bool wantsCyclicConfig() const;
     std::error_code configurePdos() noexcept;
@@ -205,6 +216,17 @@ private:
     bool csp_track_actual_{false};
     bool rpdo_seen_{false};
     uint64_t sync_count_{0};
+
+    ds402::HomingPhase homing_phase_{ds402::HomingPhase::Idle};
+    ds402::HomingConfig homing_config_;
+    ds402::HomingResult homing_result_;
+    int32_t homing_start_position_{0};
+    int32_t homing_backoff_target_{0};
+    int32_t homing_center_target_{0};
+    std::chrono::steady_clock::time_point homing_deadline_{};
+    std::chrono::steady_clock::time_point homing_contact_since_{};
+    std::chrono::steady_clock::time_point homing_settle_until_{};
+    bool homing_contact_active_{false};
 
     // Profile Position new-setpoint handshake, driven from OnSync so the
     // controlword edge is produced coherently in the cyclic stream.

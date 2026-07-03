@@ -262,6 +262,14 @@ bool MotorDriver::feedbackLive() const {
     return feedback_live_.load(std::memory_order_acquire);
 }
 
+ds402::HomingPhase MotorDriver::homingPhase() const {
+    return homing_phase_;
+}
+
+ds402::HomingResult MotorDriver::homingResult() const {
+    return homing_result_;
+}
+
 CyclicStats MotorDriver::cyclicStats() const {
     std::lock_guard<std::mutex> lock(feedback_mutex_);
     return stats_published_;
@@ -666,10 +674,24 @@ void MotorDriver::OnSync(uint8_t /*counter*/, const time_point& /*time*/) noexce
 
     // Safety watchdog: if the drive stops talking while energised, drop the
     // power stage. requestGracefulStop is one-shot, so this logs/acts once.
+    const bool homing_active = homing_phase_ != ds402::HomingPhase::Idle &&
+                               homing_phase_ != ds402::HomingPhase::Done &&
+                               homing_phase_ != ds402::HomingPhase::Failed;
     if (cyclic_active_ && stop_phase_ == StopPhase::None && stale) {
-        std::cerr << "feedback watchdog: no drive feedback for >"
-                  << boot_actions_.feedback_timeout.count() << " ms; de-energising\n";
-        requestGracefulStop();
+        if (homing_active) {
+            std::cerr << "feedback watchdog: no drive feedback for >"
+                      << boot_actions_.feedback_timeout.count()
+                      << " ms during homing; commanding zero velocity\n";
+            failHoming("feedback watchdog expired during homing");
+        } else if (homing_phase_ == ds402::HomingPhase::Failed) {
+            if (hasCommand(ds402::od::target_velocity)) {
+                setCommandValue(ds402::od::target_velocity, 0);
+            }
+        } else {
+            std::cerr << "feedback watchdog: no drive feedback for >"
+                      << boot_actions_.feedback_timeout.count() << " ms; de-energising\n";
+            requestGracefulStop();
+        }
     }
 
     if (!cyclic_active_) {
@@ -690,6 +712,10 @@ void MotorDriver::OnSync(uint8_t /*counter*/, const time_point& /*time*/) noexce
         advanceGracefulStop();
     } else if (enable_phase_ != EnablePhase::Idle) {
         advanceEnableLadder();
+    } else if (homing_phase_ != ds402::HomingPhase::Idle &&
+               homing_phase_ != ds402::HomingPhase::Done &&
+               homing_phase_ != ds402::HomingPhase::Failed) {
+        advanceHoming();
     } else if (setpoint_phase_ != SetpointPhase::Idle) {
         advanceProfileSetpoint();
     }
@@ -1213,6 +1239,244 @@ void MotorDriver::requestOperationMode(ds402::OperationMode mode) {
     boot_actions_.mode = mode;
     std::cout << "operation mode requested: " << ds402::toString(mode)
               << " (0x6060=" << static_cast<int>(static_cast<int8_t>(mode)) << ")\n";
+}
+
+void MotorDriver::requestHoming(const ds402::HomingConfig& config) {
+    if (stop_phase_ != StopPhase::None && stop_phase_ != StopPhase::Done) {
+        throw std::runtime_error("cannot home while graceful stop is in progress");
+    }
+    if (enable_phase_ != EnablePhase::Idle || setpoint_phase_ != SetpointPhase::Idle ||
+        (homing_phase_ != ds402::HomingPhase::Idle &&
+         homing_phase_ != ds402::HomingPhase::Done &&
+         homing_phase_ != ds402::HomingPhase::Failed)) {
+        throw std::runtime_error("cannot home while another control sequence is active");
+    }
+    if (feedback_.state != ds402::State::OperationEnabled) {
+        throw std::runtime_error("homing requires operation enabled");
+    }
+    if (feedback_.mode != ds402::OperationMode::CyclicSynchronousVelocity) {
+        throw std::runtime_error("homing requires cyclic synchronous velocity mode");
+    }
+    if (!hasCommand(ds402::od::target_velocity)) {
+        throw std::runtime_error("homing requires target velocity in the RPDO map");
+    }
+    if (config.search_velocity == 0 || config.approach_velocity == 0) {
+        throw std::invalid_argument("homing velocities must be nonzero");
+    }
+    if (config.threshold_torque <= 0 || config.stopped_velocity < 0) {
+        throw std::invalid_argument("homing contact thresholds must be positive");
+    }
+    if (config.min_travel <= 0 || config.max_travel <= config.min_travel) {
+        throw std::invalid_argument("homing travel limits are invalid");
+    }
+    if (config.backoff_distance <= 0 || config.center_tolerance <= 0) {
+        throw std::invalid_argument("homing backoff and center tolerance must be positive");
+    }
+    if (config.timeout.count() <= 0 || config.contact_dwell.count() <= 0 ||
+        config.settle_time.count() < 0) {
+        throw std::invalid_argument("homing timing values are invalid");
+    }
+
+    homing_config_ = config;
+    homing_result_ = {};
+    homing_start_position_ = feedback_.position;
+    homing_backoff_target_ = 0;
+    homing_center_target_ = 0;
+    homing_contact_active_ = false;
+    homing_deadline_ = std::chrono::steady_clock::now() + config.timeout;
+    homing_phase_ = ds402::HomingPhase::SearchNegative;
+
+    setControlword(ds402::controlword::enable_operation);
+    setCommandValue(ds402::od::target_velocity, -std::abs(config.search_velocity));
+    if (hasCommand(ds402::od::target_torque)) {
+        setCommandValue(ds402::od::target_torque, 0);
+    }
+    std::cout << "homing: searching negative hardstop from position " << feedback_.position
+              << " at velocity " << -std::abs(config.search_velocity) << '\n';
+}
+
+bool MotorDriver::homingTimedOut(std::chrono::steady_clock::time_point now) const {
+    return now >= homing_deadline_;
+}
+
+bool MotorDriver::homingContactDetected(int /*direction*/,
+                                        std::chrono::steady_clock::time_point now) {
+    const bool loaded = std::abs(feedback_.torque) >= homing_config_.threshold_torque;
+    if (!loaded && !homing_contact_active_) {
+        homing_contact_active_ = false;
+        return false;
+    }
+
+    if (!homing_contact_active_) {
+        homing_contact_active_ = true;
+        homing_contact_since_ = now;
+        std::cout << "homing: contact torque threshold reached at position "
+                  << feedback_.position << " (torque=" << static_cast<int>(feedback_.torque)
+                  << "); commanding zero velocity\n";
+    }
+
+    // Stop pushing immediately. The dwell confirms the contact while the
+    // commanded velocity is zero instead of driving into the hardstop.
+    setCommandValue(ds402::od::target_velocity, 0);
+
+    return now - homing_contact_since_ >= homing_config_.contact_dwell;
+}
+
+void MotorDriver::failHoming(const std::string& reason) {
+    if (hasCommand(ds402::od::target_velocity)) {
+        setCommandValue(ds402::od::target_velocity, 0);
+    }
+    if (hasCommand(ds402::od::target_torque)) {
+        setCommandValue(ds402::od::target_torque, 0);
+    }
+    setControlword(ds402::controlword::enable_operation);
+    homing_result_.success = false;
+    homing_contact_active_ = false;
+    homing_phase_ = ds402::HomingPhase::Failed;
+    std::cerr << "homing failed: " << reason << " (position=" << feedback_.position
+              << ", velocity=" << feedback_.velocity
+              << ", torque=" << static_cast<int>(feedback_.torque) << ")\n";
+}
+
+void MotorDriver::advanceHoming() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto command_search_velocity = std::abs(homing_config_.search_velocity);
+    const auto command_approach_velocity = std::abs(homing_config_.approach_velocity);
+
+    if (feedback_.state == ds402::State::Fault ||
+        feedback_.state == ds402::State::FaultReactionActive || feedback_.error_code != 0) {
+        failHoming("drive entered fault/error state");
+        return;
+    }
+    if (feedback_.state != ds402::State::OperationEnabled) {
+        failHoming("drive is no longer operation enabled");
+        return;
+    }
+    if (feedback_.mode != ds402::OperationMode::CyclicSynchronousVelocity) {
+        failHoming("drive left cyclic synchronous velocity mode");
+        return;
+    }
+    if (homingTimedOut(now)) {
+        failHoming("timeout");
+        return;
+    }
+
+    setControlword(ds402::controlword::enable_operation);
+
+    const auto travelled_from_start =
+        std::llabs(static_cast<long long>(feedback_.position) - homing_start_position_);
+    if ((homing_phase_ == ds402::HomingPhase::SearchNegative ||
+         homing_phase_ == ds402::HomingPhase::SearchPositive) &&
+        travelled_from_start > homing_config_.max_travel) {
+        failHoming("maximum search travel exceeded");
+        return;
+    }
+
+    switch (homing_phase_) {
+        case ds402::HomingPhase::SearchNegative:
+            setCommandValue(ds402::od::target_velocity, -command_search_velocity);
+            if (homingContactDetected(-1, now)) {
+                homing_result_.lower_limit_position = feedback_.position;
+                homing_backoff_target_ =
+                    homing_result_.lower_limit_position + homing_config_.backoff_distance;
+                homing_contact_active_ = false;
+                setCommandValue(ds402::od::target_velocity, command_approach_velocity);
+                homing_phase_ = ds402::HomingPhase::BackoffNegative;
+                std::cout << "homing: negative hardstop at "
+                          << homing_result_.lower_limit_position << "; backing off to "
+                          << homing_backoff_target_ << '\n';
+            }
+            break;
+
+        case ds402::HomingPhase::BackoffNegative:
+            setCommandValue(ds402::od::target_velocity, command_approach_velocity);
+            if (feedback_.position >= homing_backoff_target_) {
+                homing_contact_active_ = false;
+                setCommandValue(ds402::od::target_velocity, command_search_velocity);
+                homing_phase_ = ds402::HomingPhase::SearchPositive;
+                std::cout << "homing: searching positive hardstop\n";
+            }
+            break;
+
+        case ds402::HomingPhase::SearchPositive:
+            setCommandValue(ds402::od::target_velocity, command_search_velocity);
+            if (homingContactDetected(1, now)) {
+                homing_result_.upper_limit_position = feedback_.position;
+                homing_result_.travel =
+                    homing_result_.upper_limit_position - homing_result_.lower_limit_position;
+                if (homing_result_.travel < homing_config_.min_travel ||
+                    homing_result_.travel > homing_config_.max_travel) {
+                    failHoming("measured travel outside configured limits");
+                    return;
+                }
+
+                const auto center =
+                    static_cast<long long>(homing_result_.lower_limit_position) +
+                    (static_cast<long long>(homing_result_.travel) / 2) +
+                    static_cast<long long>(homing_config_.home_offset);
+                if (center < std::numeric_limits<int32_t>::min() ||
+                    center > std::numeric_limits<int32_t>::max()) {
+                    failHoming("computed center is outside int32 range");
+                    return;
+                }
+                homing_center_target_ = static_cast<int32_t>(center);
+                homing_result_.center_position = homing_center_target_;
+                homing_contact_active_ = false;
+                homing_phase_ = ds402::HomingPhase::MoveToCenter;
+                std::cout << "homing: positive hardstop at "
+                          << homing_result_.upper_limit_position << "; center target "
+                          << homing_center_target_ << '\n';
+            }
+            break;
+
+        case ds402::HomingPhase::MoveToCenter: {
+            const auto delta =
+                static_cast<long long>(homing_center_target_) - feedback_.position;
+            if (std::llabs(delta) <= homing_config_.center_tolerance) {
+                setCommandValue(ds402::od::target_velocity, 0);
+                homing_settle_until_ = now + homing_config_.settle_time;
+                homing_phase_ = ds402::HomingPhase::WaitAtCenter;
+                std::cout << "homing: center reached, settling\n";
+            } else {
+                setCommandValue(ds402::od::target_velocity,
+                                delta > 0 ? command_approach_velocity
+                                          : -command_approach_velocity);
+            }
+            break;
+        }
+
+        case ds402::HomingPhase::WaitAtCenter:
+            setCommandValue(ds402::od::target_velocity, 0);
+            if (std::llabs(static_cast<long long>(homing_center_target_) - feedback_.position) >
+                homing_config_.center_tolerance) {
+                homing_phase_ = ds402::HomingPhase::MoveToCenter;
+            } else if (now >= homing_settle_until_) {
+                homing_phase_ = ds402::HomingPhase::ZeroAtCenter;
+            }
+            break;
+
+        case ds402::HomingPhase::ZeroAtCenter:
+            setCommandValue(ds402::od::target_velocity, 0);
+            if (hasCommand(ds402::od::target_position)) {
+                setCommandValue(ds402::od::target_position, 0);
+            }
+            drive_.setCurrentPositionAsZero();
+            if (homing_config_.save_zero_to_nvm) {
+                drive_.storeApplicationParameters();
+            }
+            homing_result_.success = true;
+            homing_phase_ = ds402::HomingPhase::Done;
+            std::cout << "homing: zero set at center (lower="
+                      << homing_result_.lower_limit_position
+                      << ", upper=" << homing_result_.upper_limit_position
+                      << ", travel=" << homing_result_.travel << ")\n";
+            break;
+
+        case ds402::HomingPhase::Idle:
+        case ds402::HomingPhase::Done:
+        case ds402::HomingPhase::Failed:
+            break;
+    }
 }
 
 void MotorDriver::advanceEnableLadder() {

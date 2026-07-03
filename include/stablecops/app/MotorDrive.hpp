@@ -105,6 +105,13 @@ public:
     // current position. Effective only when enabled in Profile Position mode.
     void moveToPosition(int32_t counts, bool relative = false);
 
+    // Start and observe a hardstop-midpoint homing routine. The drive must
+    // already be enabled in Cyclic Synchronous Velocity mode; callers should use
+    // the proven sequence stop -> mode CSV -> enable -> startHoming().
+    void startHoming(const ds402::HomingConfig& config);
+    ds402::HomingPhase homingPhase() const;
+    ds402::HomingResult homingResult() const;
+
     // Measured cyclic cadence of this drive's bus (shared by all drives on the
     // interface): interval min/max/mean and worst-case jitter vs the nominal
     // SYNC period. Use it to verify achieved latency/jitter.

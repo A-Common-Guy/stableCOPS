@@ -198,7 +198,17 @@ void DriveController::setCstTargetTorque(int16_t target_torque) {
 }
 
 void DriveController::setCurrentPositionAsZero() {
-    object_access_.writeU8(od::set_current_position_zero, od::default_subindex, 0x01);
+    object_access_.writeI32(od::set_current_position_zero, od::default_subindex, 1);
+}
+
+void DriveController::storeApplicationParameters() {
+    object_access_.writeU32(od::store_parameters,
+                            od::store_application_parameters_subindex,
+                            od::store_parameters_signature);
+}
+
+void DriveController::stopCsvMotion() {
+    setCsvTargetVelocity(0);
 }
 
 uint16_t DriveController::readStatusword() {
