@@ -19,12 +19,13 @@
 //
 // Joint-frame sign convention (hardware-validated 2026-07-13): the USER-FACING
 // frame has the same positive pitch on both legs and mirror-symmetric roll.
-// The raw mapper frame differs: its pitch is inverted on both legs, and its
-// roll is inverted on the left leg only. AnkleLeg applies the corresponding
-// axis flips internally -- on the demand going into the PD and on every
-// joint-side feedback field coming out -- so targets, joint feedback and joint
-// torques are all user-frame. Motor-level feedback stays in the mapper's
-// actuator frame (it is below the joint mapping).
+// The raw mapper frame is already mirror-symmetric between the legs but has
+// BOTH axes pointing the other way: pitch and roll are each inverted relative
+// to the user frame, identically on both legs (kPitchSign/kRollSign in
+// AnkleLeg.cpp). AnkleLeg applies the flips internally -- on the demand going
+// into the PD and on every joint-side feedback field coming out -- so targets,
+// joint feedback and joint torques are all user-frame. Motor-level feedback
+// stays in the mapper's actuator frame (it is below the joint mapping).
 //
 // Torque scaling follows ankle_pd_torque exactly (see its header comment for
 // the full investigation): the per-mille base is the MOTOR rated torque 0x6076
@@ -196,11 +197,6 @@ private:
     // inner/outer <-> top/bottom wiring, resolved once from swap_motors.
     app::MotorDrive* inner_{nullptr};
     app::MotorDrive* outer_{nullptr};
-
-    // User-facing joint frame <-> mapper frame roll flip: -1 on the left leg
-    // only (mapper roll is mirrored there); pitch is a fixed -1 on both legs
-    // (kPitchSign in AnkleLeg.cpp). Resolved once from the side.
-    double roll_sign_{1.0};
 
     flexion::Mapper mapper_;
 

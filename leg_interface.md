@@ -20,8 +20,8 @@ all feedback is derived from the CAN drives through the mapper.
 
 Joint frame (user-facing, hardware-validated): positive pitch is the same
 direction on both legs; roll is mirror-symmetric between legs. The mapper's
-internal sign differences (pitch inverted on both legs, roll inverted on the
-left) are handled inside `AnkleLeg`.
+internal sign difference (pitch and roll both inverted, identically on both
+legs) is handled inside `AnkleLeg`.
 
 ## Usage
 

@@ -18,11 +18,13 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 
 // User-facing joint frame -> mapper frame (hardware-validated 2026-07-13):
-// the mapper's pitch (y) is inverted relative to the user frame on BOTH legs;
-// its roll (x) is inverted on the LEFT leg only (roll_sign_). Each flip is
-// applied consistently to the demand and to all joint-side feedback, so PD
-// gains keep their usual meaning.
+// the mapper's pitch (y) AND roll (x) are inverted relative to the user frame,
+// identically on both legs (the mapper's roll is already mirror-symmetric
+// between the legs, so no per-side sign is needed). Each flip is applied
+// consistently to the demand and to all joint-side feedback, so PD gains keep
+// their usual meaning.
 constexpr double kPitchSign = -1.0;
+constexpr double kRollSign = -1.0;
 
 app::MotorConfig makeMotorConfig(const AnkleLegConfig& leg, uint8_t node) {
     app::MotorConfig c;
@@ -67,8 +69,6 @@ AnkleLeg::AnkleLeg(AnkleLegConfig config)
     // inner/outer <-> top/bottom wiring (matches validate_mapper: inner->top).
     inner_ = config_.swap_motors ? &bottom_ : &top_;
     outer_ = config_.swap_motors ? &top_ : &bottom_;
-    // Mapper roll is mirrored on the left leg (see kPitchSign above).
-    roll_sign_ = config_.side == flexion::Side::Left ? -1.0 : 1.0;
 }
 
 AnkleLeg::~AnkleLeg() {
@@ -286,10 +286,10 @@ void AnkleLeg::controlLoop() {
         const flexion::AnkleJoints jvel = mapper_.mapAnkleVelActuatorToJoint(act_pos, act_vel, side);
 
         // 3) joint-space PD, per axis, in the mapper frame: the user-frame
-        //    demand is flipped into it (kPitchSign / roll_sign_); feedback is
+        //    demand is flipped into it (kPitchSign / kRollSign); feedback is
         //    flipped back the same way when published below.
         const double y_des = kPitchSign * pitch_des_.load();
-        const double x_des = roll_sign_ * roll_des_.load();
+        const double x_des = kRollSign * roll_des_.load();
         flexion::AnkleJoints tau_joint;
         tau_joint.y = kp_pitch_.load() * (y_des - jpos.y) - kd_pitch_.load() * jvel.y;
         tau_joint.x = kp_roll_.load() * (x_des - jpos.x) - kd_roll_.load() * jvel.x;
@@ -329,13 +329,13 @@ void AnkleLeg::controlLoop() {
         AnkleFeedback snap;
         snap.valid = true;
         snap.pitch_rad = kPitchSign * jpos.y;
-        snap.roll_rad = roll_sign_ * jpos.x;
+        snap.roll_rad = kRollSign * jpos.x;
         snap.pitch_vel_rad_s = kPitchSign * jvel.y;
-        snap.roll_vel_rad_s = roll_sign_ * jvel.x;
+        snap.roll_vel_rad_s = kRollSign * jvel.x;
         snap.joint_torque_pitch_nm = kPitchSign * jtau_meas.y;
-        snap.joint_torque_roll_nm = roll_sign_ * jtau_meas.x;
+        snap.joint_torque_roll_nm = kRollSign * jtau_meas.x;
         snap.cmd_torque_pitch_nm = kPitchSign * tau_joint.y;
-        snap.cmd_torque_roll_nm = roll_sign_ * tau_joint.x;
+        snap.cmd_torque_roll_nm = kRollSign * tau_joint.x;
         auto motorSnap = [&](const ds402::Feedback& fb, double motor_nm) {
             MotorFeedback m;
             m.position_rad = static_cast<double>(fb.position) * count_to_rad_;
