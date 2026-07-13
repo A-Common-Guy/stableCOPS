@@ -44,6 +44,8 @@ struct HomingConfig {
     int32_t min_travel{1000};
     int32_t max_travel{2000000};
     int32_t home_offset{0};
+    // Contact detection: torque at/above threshold_torque while |velocity| is
+    // at/below stopped_velocity (i.e. the axis is stalled, not just loaded).
     int16_t threshold_torque{90};
     int32_t stopped_velocity{200};
     std::chrono::milliseconds contact_dwell{20};

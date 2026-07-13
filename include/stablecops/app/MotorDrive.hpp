@@ -1,17 +1,20 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/ds402/DriveController.hpp"
+#include "stablecops/ds402/ObjectAccess.hpp"
 #include "stablecops/lely/CyclicStats.hpp"
 
 namespace stablecops::app {
 
 class Bus;
 
-enum class ObjectDataType : uint8_t { U8, I8, U16, I16, U32, I32 };
+// Integer width/sign of a CANopen object, shared with the ds402 layer.
+using ObjectDataType = ds402::ObjectWidth;
 
 // High-level, thread-safe handle to a single CANopen drive.
 //
@@ -67,6 +70,11 @@ public:
     // drive stops talking (the same staleness that trips the safety watchdog).
     ds402::Feedback feedback() const;
     bool feedbackLive() const;
+
+    // Block until feedbackLive() is true or `timeout` elapses; returns whether
+    // feedback is live. Typical use: right after start(), before reading the
+    // first position.
+    bool waitUntilLive(std::chrono::milliseconds timeout) const;
 
     // Latest output-shaft angle, converted from feedback().position using the
     // configured counts_per_rev. Convenience over the raw count.

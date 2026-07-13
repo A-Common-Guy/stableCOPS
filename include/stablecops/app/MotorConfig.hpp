@@ -37,8 +37,9 @@ struct MotorConfig {
     // enabling the power stage, so feedback can be observed with the joint safe.
     bool monitor_on_boot{false};
     // Operation mode (0x6060) to select over SDO while the node is
-
-    // CSP/CSV/CST, so only this object changes between cyclic modes.
+    // pre-operational at boot. One fixed PDO layout serves CSP/CSV/CST, so only
+    // this object changes between cyclic modes; unset leaves the drive's
+    // persisted mode in place.
     std::optional<ds402::OperationMode> operation_mode;
 
     std::optional<uint32_t> profile_velocity;
@@ -59,9 +60,13 @@ struct MotorConfig {
     std::chrono::milliseconds boot_timeout{5000};
     std::chrono::milliseconds state_transition_timeout{2000};
 
+    // Feedback-staleness watchdog window; 0 disables it.
     std::chrono::milliseconds feedback_timeout{100};
 
-    uint32_t sync_period_us{1000};
+    // Bus-level. Nominal SYNC period used as the jitter-telemetry reference;
+    // must match the master's sync period in the generated DCF (the default
+    // matches the shipped euservo_rp profile).
+    uint32_t sync_period_us{2000};
     // Bus-level. Opt-in real-time tuning of the bus loop thread (off by
     // default). Shared by all drives on the interface.
     RtConfig rt;

@@ -31,8 +31,7 @@ uint32_t parseUnsigned(const json& value) {
         return static_cast<uint32_t>(value.get<int64_t>());
     }
     if (value.is_string()) {
-        return static_cast<uint32_t>(
-            std::stoul(value.get<std::string>(), nullptr, 0));
+        return static_cast<uint32_t>(std::stoul(value.get<std::string>(), nullptr, 0));
     }
     throw std::runtime_error("PDO map: expected a numeric or hex-string value");
 }
@@ -41,8 +40,7 @@ PdoMappedObject parseEntry(const json& entry) {
     PdoMappedObject object;
     object.index = static_cast<uint16_t>(parseUnsigned(entry.at("index")));
     object.subindex = static_cast<uint8_t>(parseUnsigned(entry.at("subindex")));
-    object.bit_length =
-        static_cast<uint8_t>(parseUnsigned(entry.at("bit_length")));
+    object.bit_length = static_cast<uint8_t>(parseUnsigned(entry.at("bit_length")));
     if (entry.contains("name") && entry.at("name").is_string()) {
         object.name = entry.at("name").get<std::string>();
     }
@@ -51,13 +49,10 @@ PdoMappedObject parseEntry(const json& entry) {
 
 PdoChannel parseChannel(const json& channel) {
     PdoChannel result;
-    result.comm_index =
-        static_cast<uint16_t>(parseUnsigned(channel.at("communication_index")));
-    result.map_index =
-        static_cast<uint16_t>(parseUnsigned(channel.at("mapping_index")));
+    result.comm_index = static_cast<uint16_t>(parseUnsigned(channel.at("communication_index")));
+    result.map_index = static_cast<uint16_t>(parseUnsigned(channel.at("mapping_index")));
     result.cob_id = parseUnsigned(channel.at("cob_id"));
-    result.transmission_type =
-        static_cast<uint8_t>(parseUnsigned(channel.at("transmission_type")));
+    result.transmission_type = static_cast<uint8_t>(parseUnsigned(channel.at("transmission_type")));
     if (channel.contains("entries")) {
         for (const auto& entry : channel.at("entries")) {
             result.entries.push_back(parseEntry(entry));
@@ -85,7 +80,8 @@ std::vector<PdoChannel> parseChannels(const json& mappings, const char* key) {
     return channels;
 }
 
-std::vector<PdoChannel> parseChannelsForNode(const json& mappings, const char* key, uint8_t node_id) {
+std::vector<PdoChannel> parseChannelsForNode(const json& mappings, const char* key,
+                                             uint8_t node_id) {
     std::vector<PdoChannel> channels;
     if (!mappings.contains(key)) {
         return channels;
@@ -148,29 +144,33 @@ void rebaseNodeRelativeCobIds(PdoMap& map, CobIdRebase rebase) {
     }
 }
 
-}  // namespace
-
-PdoMap loadPdoMapFromSummary(const std::string& summary_path) {
+json loadSummaryDocument(const std::string& summary_path) {
     std::ifstream stream(summary_path);
     if (!stream) {
-        throw std::runtime_error("PDO map: cannot open summary file '" +
-                                 summary_path + "'");
+        throw std::runtime_error("PDO map: cannot open summary file '" + summary_path + "'");
     }
-
-    json document;
     try {
+        json document;
         stream >> document;
+        return document;
     } catch (const json::exception& exception) {
         throw std::runtime_error("PDO map: failed to parse '" + summary_path +
                                  "': " + exception.what());
     }
+}
 
+const json& requirePdoMappings(const json& document, const std::string& summary_path) {
     if (!document.contains("pdo_mappings")) {
-        throw std::runtime_error("PDO map: '" + summary_path +
-                                 "' has no 'pdo_mappings' section");
+        throw std::runtime_error("PDO map: '" + summary_path + "' has no 'pdo_mappings' section");
     }
+    return document.at("pdo_mappings");
+}
 
-    const auto& mappings = document.at("pdo_mappings");
+}  // namespace
+
+PdoMap loadPdoMapFromSummary(const std::string& summary_path) {
+    const auto document = loadSummaryDocument(summary_path);
+    const auto& mappings = requirePdoMappings(document, summary_path);
     PdoMap map;
     map.rpdo = parseChannels(mappings, "rpdo");
     map.tpdo = parseChannels(mappings, "tpdo");
@@ -178,54 +178,24 @@ PdoMap loadPdoMapFromSummary(const std::string& summary_path) {
 }
 
 PdoMap loadPdoMapFromSummary(const std::string& summary_path, uint8_t node_id) {
-    std::ifstream stream(summary_path);
-    if (!stream) {
-        throw std::runtime_error("PDO map: cannot open summary file '" +
-                                 summary_path + "'");
-    }
-
-    json document;
-    try {
-        stream >> document;
-    } catch (const json::exception& exception) {
-        throw std::runtime_error("PDO map: failed to parse '" + summary_path +
-                                 "': " + exception.what());
-    }
-
-    if (!document.contains("pdo_mappings")) {
-        throw std::runtime_error("PDO map: '" + summary_path +
-                                 "' has no 'pdo_mappings' section");
-    }
-
-    const auto representative_node_id = parseRepresentativeNodeId(document);
-    const auto& mappings = document.at("pdo_mappings");
+    const auto document = loadSummaryDocument(summary_path);
+    const auto& mappings = requirePdoMappings(document, summary_path);
     PdoMap map;
     if (hasNodeRelativeCobIdMetadata(mappings)) {
         map.rpdo = parseChannelsForNode(mappings, "rpdo", node_id);
         map.tpdo = parseChannelsForNode(mappings, "tpdo", node_id);
     } else {
+        // Older summaries carry no per-node metadata: shift the representative
+        // node's COB-IDs to this node id instead.
         map.rpdo = parseChannels(mappings, "rpdo");
         map.tpdo = parseChannels(mappings, "tpdo");
-        rebaseNodeRelativeCobIds(map, CobIdRebase{representative_node_id, node_id});
+        rebaseNodeRelativeCobIds(map, CobIdRebase{parseRepresentativeNodeId(document), node_id});
     }
     return map;
 }
 
 std::vector<uint8_t> loadNodeIdsFromSummary(const std::string& summary_path) {
-    std::ifstream stream(summary_path);
-    if (!stream) {
-        throw std::runtime_error("PDO map: cannot open summary file '" +
-                                 summary_path + "'");
-    }
-
-    json document;
-    try {
-        stream >> document;
-    } catch (const json::exception& exception) {
-        throw std::runtime_error("PDO map: failed to parse '" + summary_path +
-                                 "': " + exception.what());
-    }
-
+    const auto document = loadSummaryDocument(summary_path);
     std::vector<uint8_t> node_ids;
     if (document.contains("node_ids") && document.at("node_ids").is_array()) {
         for (const auto& value : document.at("node_ids")) {

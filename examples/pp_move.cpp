@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 
+#include "example_cli.hpp"
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/app/MotorDrive.hpp"
 #include "stablecops/ds402/State.hpp"
@@ -33,17 +34,10 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--can" && i + 1 < argc) {
-            config.can_interface = argv[++i];
-        } else if (arg == "--dcf" && i + 1 < argc) {
-            config.master_dcf_path = argv[++i];
-        } else if (arg == "--summary" && i + 1 < argc) {
-            config.summary_path = argv[++i];
-        } else if (arg == "--master-node" && i + 1 < argc) {
-            config.master_node_id = static_cast<uint8_t>(std::stoi(argv[++i]));
-        } else if (arg == "--node" && i + 1 < argc) {
-            config.node_id = static_cast<uint8_t>(std::stoi(argv[++i]));
-        } else if (arg == "--offset" && i + 1 < argc) {
+        if (examples::parseCommonArg(config, argc, argv, i)) {
+            continue;
+        }
+        if (arg == "--offset" && i + 1 < argc) {
             offset = std::stoi(argv[++i]);
         } else if (arg == "--profile-velocity" && i + 1 < argc) {
             config.profile_velocity = static_cast<uint32_t>(std::stoul(argv[++i]));
@@ -54,10 +48,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::stod(argv[++i]);
         } else {
-            std::cerr << "usage: pp_move [--can can0] [--dcf path] [--summary path] "
-                         "[--master-node 127] [--node 1] [--offset 0] "
-                         "[--profile-velocity n] [--profile-accel n] [--profile-decel n] "
-                         "[--seconds 5]\n";
+            std::cerr << "usage: pp_move " << examples::kCommonUsage
+                      << " [--offset 0] [--profile-velocity n] [--profile-accel n] "
+                         "[--profile-decel n] [--seconds 5]\n";
             return EXIT_FAILURE;
         }
     }
@@ -66,13 +59,7 @@ int main(int argc, char** argv) {
 
     stablecops::app::MotorDrive drive(config);
     drive.start();
-
-    const auto boot_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!drive.feedbackLive() &&
-           std::chrono::steady_clock::now() < boot_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+    drive.waitUntilLive(std::chrono::seconds(5));
 
     // Trigger one relative profile move; the drive runs the trajectory itself.
     drive.moveToPosition(offset, /*relative=*/true);

@@ -2,9 +2,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -14,45 +14,12 @@
 #include "stablecops/app/RealtimeScheduling.hpp"
 #include "stablecops/ds402/ObjectAccess.hpp"
 #include "stablecops/ds402/State.hpp"
+#include "ToolCli.hpp"
 
 namespace {
 
-std::optional<stablecops::ds402::OperationMode> parseOperationMode(
-    const std::string& name) {
-    using stablecops::ds402::OperationMode;
-    if (name == "csp") return OperationMode::CyclicSynchronousPosition;
-    if (name == "csv") return OperationMode::CyclicSynchronousVelocity;
-    if (name == "cst") return OperationMode::CyclicSynchronousTorque;
-    if (name == "pp") return OperationMode::ProfilePosition;
-    if (name == "pv") return OperationMode::ProfileVelocity;
-    if (name == "pt") return OperationMode::ProfileTorque;
-    return std::nullopt;
-}
-
-// Parse a comma-separated node id list ("1,2,3") into 8-bit node ids.
-std::optional<std::vector<uint8_t>> parseNodeList(const std::string& spec) {
-    std::vector<uint8_t> nodes;
-    std::stringstream stream(spec);
-    std::string token;
-    while (std::getline(stream, token, ',')) {
-        if (token.empty()) {
-            continue;
-        }
-        try {
-            const int value = std::stoi(token);
-            if (value < 1 || value > 127) {
-                return std::nullopt;
-            }
-            nodes.push_back(static_cast<uint8_t>(value));
-        } catch (...) {
-            return std::nullopt;
-        }
-    }
-    if (nodes.empty()) {
-        return std::nullopt;
-    }
-    return nodes;
-}
+using stablecops::tools::parseNodeList;
+using stablecops::tools::parseOperationMode;
 
 // Parse a raw SDO-write spec "index:sub:type=value", e.g. "0x605C:0:i16=0".
 // index/sub/value accept 0x-prefixed hex or decimal; type is one of
@@ -91,9 +58,7 @@ std::optional<stablecops::ds402::ObjectWrite> parseObjectWrite(const std::string
     return write;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int runMaster(int argc, char** argv) {
     stablecops::app::MotorConfig config;
     std::vector<uint8_t> node_ids;  // empty => use config.node_id (single node)
     bool show_stats = false;
@@ -311,4 +276,17 @@ int main(int argc, char** argv) {
     }
 
     return EXIT_SUCCESS;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    // Malformed numeric arguments (std::stoi/std::stoul) and boot failures
+    // (bad DCF path, CAN open error) surface as a message instead of terminate.
+    try {
+        return runMaster(argc, argv);
+    } catch (const std::exception& exception) {
+        std::cerr << "stablecops_master: " << exception.what() << '\n';
+        return EXIT_FAILURE;
+    }
 }

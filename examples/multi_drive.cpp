@@ -26,6 +26,7 @@
 #include <thread>
 #include <vector>
 
+#include "example_cli.hpp"
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/app/MotorDrive.hpp"
 #include "stablecops/ds402/State.hpp"
@@ -54,15 +55,10 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--can" && i + 1 < argc) {
-            base.can_interface = argv[++i];
-        } else if (arg == "--dcf" && i + 1 < argc) {
-            base.master_dcf_path = argv[++i];
-        } else if (arg == "--summary" && i + 1 < argc) {
-            base.summary_path = argv[++i];
-        } else if (arg == "--master-node" && i + 1 < argc) {
-            base.master_node_id = static_cast<uint8_t>(std::stoi(argv[++i]));
-        } else if (arg == "--nodes" && i + 1 < argc) {
+        if (examples::parseCommonArg(base, argc, argv, i)) {
+            continue;
+        }
+        if (arg == "--nodes" && i + 1 < argc) {
             node_ids = parseNodes(argv[++i]);
         } else if (arg == "--enable") {
             base.enable_on_boot = true;

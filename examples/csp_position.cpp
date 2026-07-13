@@ -1,23 +1,25 @@
-// Simple example: enable the drive in Cyclic Synchronous Position (CSP) and hold
-// the position captured at enable, optionally offset by --offset counts. The
-// commanded position is streamed every cycle; the live feedback is printed. On
-// exit the drive is de-energised by the graceful stop.
+// Example: enable the drive in Cyclic Synchronous Position (CSP) and stream a
+// sine wave around the position captured at enable:
+//   target = start + amplitude * sin(2*pi*t / period)
+// Default --amplitude is 0, which simply holds the start position. The live
+// feedback is printed; on exit the drive is de-energised by the graceful stop.
 //
-// SAFETY: this moves the motor to (start + offset). Default --offset is 0 (hold
-// the current position). Keep the joint clear and be ready to cut power.
+// SAFETY: a nonzero --amplitude MOVES the motor. Keep the joint clear and be
+// ready to cut power.
 //
 // Run:
 //   sudo ./canup.sh
-//   build/examples/csp_position --can can0 --node 1 --offset 0 --seconds 5
+//   build/examples/csp_position --can can0 --node 1 --amplitude 0 --seconds 5
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
 #include <thread>
-#include <cmath>
 
+#include "example_cli.hpp"
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/app/MotorDrive.hpp"
 #include "stablecops/ds402/State.hpp"
@@ -26,46 +28,43 @@ int main(int argc, char** argv) {
     stablecops::app::MotorConfig config;
     config.enable_on_boot = true;
     config.operation_mode = stablecops::ds402::OperationMode::CyclicSynchronousPosition;
-    int32_t amplitude = 0;  // counts to add to the position captured at enable
-    double seconds = 100.0;
-    double period = 1.0;
+    int32_t amplitude = 0;  // sine amplitude in counts; 0 = hold still
+    double seconds = 5.0;
+    double period = 1.0;  // sine period in seconds
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--can" && i + 1 < argc) {
-            config.can_interface = argv[++i];
-        } else if (arg == "--dcf" && i + 1 < argc) {
-            config.master_dcf_path = argv[++i];
-        } else if (arg == "--summary" && i + 1 < argc) {
-            config.summary_path = argv[++i];
-        } else if (arg == "--master-node" && i + 1 < argc) {
-            config.master_node_id = static_cast<uint8_t>(std::stoi(argv[++i]));
-        } else if (arg == "--node" && i + 1 < argc) {
-            config.node_id = static_cast<uint8_t>(std::stoi(argv[++i]));
-        } else if (arg == "--amplitude" && i + 1 < argc) {
+        if (examples::parseCommonArg(config, argc, argv, i)) {
+            continue;
+        }
+        if (arg == "--amplitude" && i + 1 < argc) {
             amplitude = std::stoi(argv[++i]);
         } else if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::stod(argv[++i]);
         } else if (arg == "--period" && i + 1 < argc) {
             period = std::stod(argv[++i]);
         } else {
-            std::cerr << "usage: csp_position [--can can0] [--dcf path] [--summary path] "
-                         "[--master-node 127] [--node 1] [--amplitude 0] [--seconds 5] [--period 1]\n";
+            std::cerr << "usage: csp_position " << examples::kCommonUsage
+                      << " [--amplitude 0] [--seconds 5] [--period 1]\n";
             return EXIT_FAILURE;
         }
     }
+    if (period <= 0.0) {
+        std::cerr << "--period must be positive\n";
+        return EXIT_FAILURE;
+    }
 
-    std::cout << "CSP: hold (start + " << amplitude << " * sin(2 * M_PI * t / " << period << ")) for " << seconds << " s\n";
+    std::cout << "CSP: stream (start + " << amplitude << " * sin(2*pi*t / " << period << " s)) for "
+              << seconds << " s\n";
 
     stablecops::app::MotorDrive drive(config);
     drive.start();
 
     // Wait for the first cyclic feedback so we can read the position at enable.
-    const auto boot_deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!drive.feedbackLive() &&
-           std::chrono::steady_clock::now() < boot_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (!drive.waitUntilLive(std::chrono::seconds(5))) {
+        std::cerr << "no cyclic feedback received; check SYNC and PDO configuration\n";
+        drive.stop();
+        return EXIT_FAILURE;
     }
     const int32_t center = drive.feedback().position;
     const auto start = std::chrono::steady_clock::now();

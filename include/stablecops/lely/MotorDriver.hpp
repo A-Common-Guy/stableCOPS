@@ -53,18 +53,14 @@ struct BootActionConfig {
     uint32_t sync_period_us{1000};
 };
 
-// CANopen integer type of a PDO-mapped object, derived from its bit length and
-// signedness. Used to read/write each mapped object with the correct width and
-// sign on the cyclic path.
-enum class PdoDataType { U8, I8, U16, I16, U32, I32 };
-
 // One object that rides in a cyclic PDO, keyed by (index, subindex). For command
 // objects `value` holds the latest commanded value the master streams; for
-// feedback objects it holds the most recently received raw value.
+// feedback objects it holds the most recently received raw value. `type` is the
+// CANopen integer type derived from the mapped bit length and signedness.
 struct CyclicObject {
     uint16_t index{0};
     uint8_t subindex{0};
-    PdoDataType type{PdoDataType::U32};
+    ds402::ObjectWidth type{ds402::ObjectWidth::U32};
     int64_t value{0};
 };
 
@@ -198,8 +194,16 @@ private:
     // guarding: log once, drop liveness, and de-energise if still running.
     void handleNodeLoss(const char* channel, bool lost);
 
-    bool isCommandObject(uint16_t index) const;
+    // True for the DS402 objects this firmware only accepts via PDO (controlword
+    // and the motion targets); SDO downloads to them abort with vendor code
+    // 0x00000002, so unmapped writes are dropped with a warning instead.
+    bool isPdoOnlyCommand(uint16_t index) const;
     bool isFeedbackObject(uint16_t index) const;
+    // Stage a write into the cyclic command image when the object is mapped,
+    // drop it (with a warning) when it is PDO-only but unmapped, and fall back
+    // to a blocking SDO download otherwise. Shared by the typed write overrides.
+    template <typename T>
+    void writeStagedOrSdo(uint16_t index, uint8_t subindex, T value);
     // True when `index` actually rides in an active TxPDO (i.e. its cached value
     // is refreshed every cycle), so a read can be served from the snapshot
     // instead of a blocking SDO round trip.
@@ -221,7 +225,7 @@ private:
     BootActionConfig boot_actions_;
     config::PdoMap pdo_map_;
 
-    enum class StopPhase { None, DisableVoltage, Done };
+    enum class StopPhase : uint8_t { None, DisableVoltage, Done };
 
     // Active RxPDO objects the master transmits to the drive (commands) and
     // active TxPDO objects it receives (feedback), built once from pdo_map_.
@@ -259,15 +263,20 @@ private:
     std::chrono::steady_clock::time_point homing_settle_until_{};
     bool homing_contact_active_{false};
     bool homing_restore_enabled_{false};
+    // Set while a homing phase has a blocking SDO exchange in flight on its
+    // fiber. OnSync keeps arriving during that suspension (each callback runs on
+    // its own fiber), so advanceHoming() must not re-enter and re-issue the
+    // same SDO writes.
+    bool homing_command_in_flight_{false};
 
     // Profile Position new-setpoint handshake, driven from OnSync so the
     // controlword edge is produced coherently in the cyclic stream.
-    enum class SetpointPhase { Idle, Assert, WaitAck, Clear };
+    enum class SetpointPhase : uint8_t { Idle, Assert, WaitAck, Clear };
     SetpointPhase setpoint_phase_{SetpointPhase::Idle};
     bool profile_move_relative_{false};
 
     // Non-blocking fault-reset + re-enable ladder, driven from OnSync.
-    enum class EnablePhase { Idle, FaultReset, Shutdown, SwitchOn, EnableOp };
+    enum class EnablePhase : uint8_t { Idle, FaultReset, Shutdown, SwitchOn, EnableOp };
     EnablePhase enable_phase_{EnablePhase::Idle};
     bool recover_to_enabled_{false};
     std::chrono::steady_clock::time_point enable_phase_deadline_{};

@@ -1,6 +1,7 @@
 #include "stablecops/app/CanopenApplication.hpp"
 
 #include "stablecops/config/PdoMap.hpp"
+#include "stablecops/lely/MotorDriver.hpp"
 #include "stablecops/log/Log.hpp"
 
 #include <lely/coapp/master.hpp>

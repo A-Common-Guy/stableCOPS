@@ -2,6 +2,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -29,11 +30,16 @@
 #include "nlohmann/json.hpp"
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/app/MotorDrive.hpp"
+#include "stablecops/ds402/Diagnostics.hpp"
 #include "stablecops/ds402/State.hpp"
+#include "ToolCli.hpp"
 
 namespace {
 
 using json = nlohmann::json;
+using stablecops::tools::parseNodeList;
+using stablecops::tools::parseOperationMode;
+using stablecops::tools::parseUnsignedText;
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::atomic<bool> g_stop_requested{false};
@@ -45,29 +51,6 @@ constexpr auto kForcedShutdownExitDelay = std::chrono::milliseconds{750};
 void handleSignal(int /*signal*/) {
     g_signal_count.fetch_add(1, std::memory_order_relaxed);
     g_stop_requested.store(true);
-}
-
-std::optional<stablecops::ds402::OperationMode> parseOperationMode(const std::string& name) {
-    using stablecops::ds402::OperationMode;
-    if (name == "csp") {
-        return OperationMode::CyclicSynchronousPosition;
-    }
-    if (name == "csv") {
-        return OperationMode::CyclicSynchronousVelocity;
-    }
-    if (name == "cst") {
-        return OperationMode::CyclicSynchronousTorque;
-    }
-    if (name == "pp") {
-        return OperationMode::ProfilePosition;
-    }
-    if (name == "pv") {
-        return OperationMode::ProfileVelocity;
-    }
-    if (name == "pt") {
-        return OperationMode::ProfileTorque;
-    }
-    return std::nullopt;
 }
 
 std::string homingPhaseName(stablecops::ds402::HomingPhase phase) {
@@ -117,39 +100,6 @@ std::string lower(std::string value) {
         }
     }
     return value;
-}
-
-uint64_t parseUnsignedText(const std::string& text, uint64_t max_value) {
-    std::size_t consumed = 0;
-    const auto value = std::stoull(text, &consumed, 0);
-    if (consumed != text.size() || value > max_value) {
-        throw std::invalid_argument("numeric value out of range: " + text);
-    }
-    return value;
-}
-
-std::optional<std::vector<uint8_t>> parseNodeList(const std::string& spec) {
-    std::vector<uint8_t> nodes;
-    std::stringstream stream(spec);
-    std::string token;
-    while (std::getline(stream, token, ',')) {
-        if (token.empty()) {
-            continue;
-        }
-        try {
-            const auto value = parseUnsignedText(token, 127);
-            if (value == 0) {
-                return std::nullopt;
-            }
-            nodes.push_back(static_cast<uint8_t>(value));
-        } catch (...) {
-            return std::nullopt;
-        }
-    }
-    if (nodes.empty()) {
-        return std::nullopt;
-    }
-    return nodes;
 }
 
 int64_t parseSignedText(const std::string& text) {
@@ -696,6 +646,11 @@ public:
             if (client_fd < 0) {
                 continue;
             }
+            // The server handles one connection at a time; bound the socket I/O
+            // so a stalled client cannot freeze the whole UI.
+            timeval timeout{2, 0};
+            ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            ::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
             try {
                 if (const auto request = readHttpRequest(client_fd)) {
                     sendHttpResponse(client_fd, handler_(*request));
@@ -882,7 +837,8 @@ const char* indexHtml() {
           metric('Velocity', node.feedback.velocity),
           metric('Torque', node.feedback.torque),
           metric('Homing', node.homing.phase, node.homing.result.success ? 'ok' : ''),
-          metric('Error', node.feedback.error_code_hex, node.faulted ? 'bad' : 'ok')
+          metric('Error', `${node.feedback.error_code_hex} ${node.feedback.error_description}`, node.faulted ? 'bad' : 'ok'),
+          metric('Error register', node.feedback.error_register_bits, node.feedback.error_register ? 'bad' : 'ok')
         ].join('');
       } catch (error) {
         $('status').innerHTML = metric('Server', error.message, 'bad');
@@ -942,11 +898,15 @@ json feedbackJson(uint8_t node_id, stablecops::app::MotorDrive& drive) {
           {"torque", feedback.torque},
           {"error_code", feedback.error_code},
           {"error_code_hex", hexValue(feedback.error_code, 4)},
+          {"error_description",
+           stablecops::ds402::describeDeviceFault(
+               feedback.error_code != 0 ? feedback.error_code : feedback.emergency_error_code)},
           {"node_alive", feedback.node_alive},
           {"emcy_error_code", feedback.emergency_error_code},
           {"emcy_error_code_hex", hexValue(feedback.emergency_error_code, 4)},
           {"error_register", feedback.error_register},
-          {"error_register_hex", hexValue(feedback.error_register, 2)}}},
+          {"error_register_hex", hexValue(feedback.error_register, 2)},
+          {"error_register_bits", stablecops::ds402::describeErrorRegister(feedback.error_register)}}},
         {"cyclic_stats",
          {{"cycles", stats.cycles},
           {"last_us", stats.last_us},

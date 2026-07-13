@@ -8,6 +8,7 @@
 
 #include "stablecops/app/CanopenApplication.hpp"
 #include "stablecops/app/RealtimeScheduling.hpp"
+#include "stablecops/lely/MotorDriver.hpp"
 
 namespace stablecops::app {
 
@@ -128,6 +129,9 @@ void Bus::start() {
 
         app->run();
 
+        // The loop has exited (shutdown or forced stop); report not-running
+        // even before shutdown() joins this thread.
+        running_.store(false);
         app_.store(nullptr, std::memory_order_release);
         app.reset();  // destroy Lely objects on the loop thread
     });

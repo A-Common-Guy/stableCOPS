@@ -27,6 +27,7 @@ else()
 endif()
 option(STABLECOPS_BUILD_TOOLS "Build the stableCOPS CLI tools" ${STABLECOPS_TOPLEVEL})
 option(STABLECOPS_BUILD_EXAMPLES "Build the stableCOPS examples" ${STABLECOPS_TOPLEVEL})
+option(STABLECOPS_BUILD_TESTS "Build the stableCOPS unit tests" ${STABLECOPS_TOPLEVEL})
 option(STABLECOPS_INSTALL "Generate stableCOPS install and CMake-package rules" ${STABLECOPS_TOPLEVEL})
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ option(STABLECOPS_INSTALL "Generate stableCOPS install and CMake-package rules" 
 add_library(stablecops SHARED
     src/log/Log.cpp
     src/ds402/DriveController.cpp
+    src/ds402/Diagnostics.cpp
     src/ds402/State.cpp
     src/config/PdoMap.cpp
     src/app/CanopenApplication.cpp
@@ -77,15 +79,21 @@ set_target_properties(stablecops PROPERTIES
 # ---------------------------------------------------------------------------
 if(STABLECOPS_BUILD_TOOLS)
     add_executable(stablecops_master src/tools/stablecops_master.cpp)
-    # The master tool uses the advanced CanopenApplication API, whose header
-    # still exposes Lely types, so it needs the Lely include path directly
-    # (unlike the MotorDrive-based examples below).
-    target_link_libraries(stablecops_master PRIVATE stablecops PkgConfig::LELY_COAPP)
+    target_link_libraries(stablecops_master PRIVATE stablecops)
 
     add_executable(stablecops_commissiond src/tools/stablecops_commissiond.cpp)
     target_include_directories(stablecops_commissiond PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
     target_link_libraries(stablecops_commissiond PRIVATE stablecops)
+endif()
+
+if(STABLECOPS_BUILD_TESTS)
+    enable_testing()
+    add_executable(stablecops_tests tests/stablecops_tests.cpp)
+    target_include_directories(stablecops_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+    target_link_libraries(stablecops_tests PRIVATE stablecops)
+    add_test(NAME stablecops_tests COMMAND stablecops_tests)
 endif()
 
 if(STABLECOPS_BUILD_EXAMPLES)
@@ -116,6 +124,13 @@ if(STABLECOPS_BUILD_EXAMPLES)
     set_target_properties(zero_leg PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples)
     target_link_libraries(zero_leg PRIVATE stablecops)
+
+    # dump_config is CAN-only and read-only: it SDO-reads the configuration
+    # parameters of both drives in a leg and prints them side by side.
+    add_executable(dump_config leg/examples/dump_config.cpp)
+    set_target_properties(dump_config PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples)
+    target_link_libraries(dump_config PRIVATE stablecops)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -166,6 +181,64 @@ if(STABLECOPS_BUILD_ECAT)
     set_target_properties(capture_rom PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples)
     target_link_libraries(capture_rom PRIVATE ecat_core)
+
+    # -----------------------------------------------------------------------
+    # Closed-chain ankle mapper validation. Off by default because it pulls
+    # Eigen via FetchContent (if not already installed) and compiles the vendored
+    # neura_mapper_library. Requires the EtherCAT tools above.
+    #   cmake ... -DSTABLECOPS_BUILD_ECAT=ON -DSTABLECOPS_BUILD_MAPPER=ON
+    # Select the ankle hardware generation with -DSTABLECOPS_ANKLE_GENERATION=gen3-2
+    # (default gen3-2 for the new leg; gen3-1 is the older prismatic ankle).
+    # -----------------------------------------------------------------------
+    option(STABLECOPS_BUILD_MAPPER "Build the closed-chain ankle mapper validation tool" OFF)
+    set(STABLECOPS_ANKLE_GENERATION "gen3-2" CACHE STRING "Ankle LUT generation (gen3-1 or gen3-2)")
+
+    if(STABLECOPS_BUILD_MAPPER)
+        find_package(Eigen3 QUIET NO_MODULE)
+        if(NOT TARGET Eigen3::Eigen)
+            message(STATUS "Eigen3 not found; fetching it for the mapper")
+            include(FetchContent)
+            set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+            set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+            set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+            FetchContent_Declare(Eigen3
+                GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+                GIT_TAG 3.4.0)
+            FetchContent_MakeAvailable(Eigen3)
+        endif()
+
+        set(MAPPER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/leg/4ne1_closed_chain_mapping/deployment)
+        # Compile the mapper sources directly (its own CMakeLists is a standalone
+        # project); this lets us control the ankle generation and Eigen source.
+        add_library(leg_mapper STATIC
+            ${MAPPER_DIR}/neura_mapper_library/src/mapper.cpp
+            ${MAPPER_DIR}/src/lookup_table.cpp)
+        target_include_directories(leg_mapper
+            PUBLIC
+                ${MAPPER_DIR}/neura_mapper_library/include
+                ${MAPPER_DIR}/include
+            PRIVATE
+                ${MAPPER_DIR}/neura_mapper_library)
+        target_link_libraries(leg_mapper PUBLIC Eigen3::Eigen)
+        target_compile_features(leg_mapper PUBLIC cxx_std_17)
+        if(STABLECOPS_ANKLE_GENERATION STREQUAL "gen3-2")
+            target_compile_definitions(leg_mapper PRIVATE ANKLE_GEN3_2)
+        elseif(NOT STABLECOPS_ANKLE_GENERATION STREQUAL "gen3-1")
+            message(FATAL_ERROR "STABLECOPS_ANKLE_GENERATION must be gen3-1 or gen3-2")
+        endif()
+
+        add_executable(validate_mapper leg/examples/validate_mapper.cpp)
+        set_target_properties(validate_mapper PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples)
+        target_link_libraries(validate_mapper PRIVATE leg_mapper ecat_core stablecops)
+
+        # Interactive joint-space PD torque control through the mapper's torque
+        # map (CST), validated with the EtherCAT encoders, telemetry to PlotJuggler.
+        add_executable(ankle_pd_torque leg/examples/ankle_pd_torque.cpp)
+        set_target_properties(ankle_pd_torque PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples)
+        target_link_libraries(ankle_pd_torque PRIVATE leg_mapper ecat_core stablecops)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

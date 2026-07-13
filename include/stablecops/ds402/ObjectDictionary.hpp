@@ -4,6 +4,17 @@
 
 namespace stablecops::ds402::od {
 
+// CiA301 diagnostic objects. The error register (0x1001) is an 8-bit RO summary
+// of the active fault classes and is NOT PDO-mappable, so it can only be read
+// over SDO or observed in the byte 2 of an EMCY frame. The pre-defined error
+// field (0x1003) is the drive's error history array: sub 0 is the number of
+// stored entries and sub 1 is the most recent (each entry packs the emergency
+// error code in bits 0..15 and the error register in bits 16..23).
+constexpr uint16_t error_register = 0x1001;
+constexpr uint16_t predefined_error_field = 0x1003;
+constexpr uint8_t predefined_error_field_count_subindex = 0x00;
+constexpr uint8_t predefined_error_field_latest_subindex = 0x01;
+
 constexpr uint16_t error_code = 0x603F;
 constexpr uint16_t controlword = 0x6040;
 constexpr uint16_t statusword = 0x6041;

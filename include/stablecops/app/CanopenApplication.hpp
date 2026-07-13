@@ -7,7 +7,13 @@
 
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/ds402/DriveController.hpp"
-#include "stablecops/lely/MotorDriver.hpp"
+#include "stablecops/lely/CyclicStats.hpp"
+
+// Forward-declared so this header stays free of Lely includes; only callers of
+// motor()/motorIfPresent() need the full MotorDriver (and thus Lely) headers.
+namespace stablecops::lely {
+class MotorDriver;
+}
 
 namespace stablecops::app {
 
@@ -29,8 +35,7 @@ public:
     explicit CanopenApplication(std::vector<MotorConfig> node_configs,
                                 bool install_signal_handler = true);
     // Single-node convenience.
-    explicit CanopenApplication(const MotorConfig& config,
-                                bool install_signal_handler = true);
+    explicit CanopenApplication(const MotorConfig& config, bool install_signal_handler = true);
     ~CanopenApplication();
 
     CanopenApplication(const CanopenApplication&) = delete;

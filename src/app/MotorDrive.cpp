@@ -1,5 +1,7 @@
 #include "stablecops/app/MotorDrive.hpp"
 
+#include <chrono>
+#include <thread>
 #include <utility>
 
 #include "stablecops/app/Bus.hpp"
@@ -59,6 +61,17 @@ ds402::Feedback MotorDrive::feedback() const {
 
 bool MotorDrive::feedbackLive() const {
     return bus_->feedbackLive(node_id_);
+}
+
+bool MotorDrive::waitUntilLive(std::chrono::milliseconds timeout) const {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!feedbackLive()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return true;
 }
 
 stablecops::lely::CyclicStats MotorDrive::cyclicStats() const {
@@ -187,16 +200,14 @@ void MotorDrive::moveToPosition(int32_t counts, bool relative) {
 }
 
 void MotorDrive::startHoming(const ds402::HomingConfig& config) {
-    bus_->invokeOnDriver(node_id_, [&config](stablecops::lely::MotorDriver& motor) {
-        motor.requestHoming(config);
-    });
+    bus_->invokeOnDriver(
+        node_id_, [&config](stablecops::lely::MotorDriver& motor) { motor.requestHoming(config); });
 }
 
 ds402::HomingPhase MotorDrive::homingPhase() const {
     ds402::HomingPhase phase = ds402::HomingPhase::Idle;
-    bus_->invokeOnDriver(node_id_, [&phase](stablecops::lely::MotorDriver& motor) {
-        phase = motor.homingPhase();
-    });
+    bus_->invokeOnDriver(
+        node_id_, [&phase](stablecops::lely::MotorDriver& motor) { phase = motor.homingPhase(); });
     return phase;
 }
 

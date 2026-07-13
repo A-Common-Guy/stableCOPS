@@ -11,7 +11,14 @@
 
 #include "stablecops/app/MotorConfig.hpp"
 #include "stablecops/ds402/DriveController.hpp"
-#include "stablecops/lely/MotorDriver.hpp"
+#include "stablecops/lely/CyclicStats.hpp"
+
+// Forward-declared so this header stays free of Lely includes; the callbacks
+// passed to postToDriver/invokeOnDriver need the full MotorDriver header only
+// in the translation units that define them.
+namespace stablecops::lely {
+class MotorDriver;
+}
 
 namespace stablecops::app {
 
