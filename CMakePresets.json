@@ -10,12 +10,28 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
+    },
+    {
+      "name": "arm64",
+      "displayName": "ARM64 cross (aarch64-linux-gnu)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-arm64",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "STABLECOPS_BUILD_MAPPER": "ON",
+        "STABLECOPS_BUILD_TESTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "default",
       "configurePreset": "default"
+    },
+    {
+      "name": "arm64",
+      "configurePreset": "arm64"
     }
   ]
 }

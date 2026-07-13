@@ -1,0 +1,4 @@
+[submodule "leg/4ne1_closed_chain_mapping"]
+	path = leg/4ne1_closed_chain_mapping
+	url = https://gitlab.neura-robotics.com/4ne1/4ne1-software/4ne1_closed_chain_mapping.git
+	branch = add_ankle_gen_32

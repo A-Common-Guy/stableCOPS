@@ -165,7 +165,27 @@ Leg-specific tools live under `leg/examples/`:
 | --- | --- | --- |
 | `zero_leg` | CAN | Hardstop-midpoint homing + leg zero offset, saved to NVM |
 | `dump_config` | CAN | Read-only side-by-side dump of both drives' parameters (optional CSV) |
+| `two_leg_demo` | CAN (+mapper) | Both ankles (can0=right, can1=left) under interactive joint-space PD torque control via `AnkleLeg` |
 | `capture_ecat_zero`, `capture_rom`, `validate_trajectory`, `validate_mapper`, `ankle_pd_torque` | EtherCAT (+CAN) | Encoder calibration / validation workflows |
+
+## Closed-chain ankle control (leg_control)
+
+`-DSTABLECOPS_BUILD_MAPPER=ON` builds the vendored closed-chain mapper
+(`leg_mapper`, select the hardware with
+`-DSTABLECOPS_ANKLE_GENERATION=gen3-1|gen3-2`) plus `leg_control`, a CAN-only
+library on top of it — no EtherCAT required. Its `stablecops::leg::AnkleLeg`
+(`leg/include/stablecops/leg/AnkleLeg.hpp`) owns the two drives of one leg and
+runs the ankle_pd_torque pipeline (CST, joint-space PD through the mapper) on
+an internal control thread; users set joint-side pitch/roll targets and
+per-axis kp/kd, and read joint position/velocity, joint+motor torque and motor
+position feedback — all derived from the CAN feedback through the mapper.
+
+```bash
+cmake --preset default -DSTABLECOPS_BUILD_MAPPER=ON
+cmake --build --preset default
+sudo ./canup.sh can0 can1
+sudo build/examples/two_leg_demo --rt
+```
 
 ## EtherCAT + CAN (motion-faster)
 
@@ -178,9 +198,9 @@ cmake --preset default -DSTABLECOPS_BUILD_ECAT=ON
 cmake --build --preset default
 ```
 
-EtherCAT needs a raw NIC (root / `CAP_NET_RAW`). The closed-chain ankle mapper
-adds `-DSTABLECOPS_BUILD_MAPPER=ON` (and
-`-DSTABLECOPS_ANKLE_GENERATION=gen3-1|gen3-2`).
+EtherCAT needs a raw NIC (root / `CAP_NET_RAW`). Adding
+`-DSTABLECOPS_BUILD_MAPPER=ON` on top also builds the EtherCAT-validated mapper
+tools (`validate_mapper`, `ankle_pd_torque`).
 
 ```bash
 sudo build/examples/motion_faster_encoder enp0s31f6

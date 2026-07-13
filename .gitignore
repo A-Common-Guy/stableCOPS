@@ -1,4 +1,5 @@
 build/
+build-*/
 compile_commands.json
 *.o
 *.a
@@ -15,6 +16,8 @@ logs/
 sdk/
 dcf/master.dcf
 dcf/
-leg/
+# leg/ is tracked (AnkleLeg library + examples; the mapper is a submodule),
+# except generated validation/plot artifacts.
+leg/output/
 leg.zip
 mm/
